@@ -1,0 +1,5 @@
+*\.o
+.depend
+kqserver
+kqserver.debug
+kqserver.full
