@@ -1,7 +1,7 @@
 /*
- * Collect events/persec ? core?
- * create # kqueues= # cores
+ * 
  * New thread(maybe main) to do rusage to capture cpu usage etc
+ * Add sysctl kern.sched.cpu_topology <- to bind thread to specfic core and add toggles for cores/ht cores
  *
  */
 
@@ -20,110 +20,268 @@
 #include <netinet/in.h>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include "utils.h"
+#include <signal.h>
+#include <algorithm>
+#include <atomic>
+#include <time.h>
+#include <pthread_np.h>
 
 using namespace std;
 
-#define THREADS 2
 //#define PRINT_CLIENT_ECHO
+#define CLIENT_RECV_BUFFER_SIZE 10240
+#define ARG_COUNT 3
 
-enum kqueue_type {
-  kq_type_one = 0,
-  kq_type_multiple = -1
+enum Kqueue_type {
+	kq_type_one = 0,
+	kq_type_multiple = -1
 };
 
-int conns_num = 0;
+int threads_total = -1;
 vector<thread> threads;
-vector<int> conns;
-kqueue_type test_type;
+vector<int> kqs;
 
-void client_listener(int n, int kq_m) {
-  int local_kq;
-  int local_fd, local_ret;
-  struct kevent event;
-  struct kevent tevent;
-  int size = 10240;
-  char *data = new char[size];
+vector<unique_ptr<atomic<long>>> perf_counter;
+Kqueue_type test_type = kq_type_multiple;
 
-  printf("New Connection. (%d)\n", n);
+void 
+mon_thread() 
+{	
+	long total_ev;
+	//sample from perf_counter every 1 sec and write it to csv
+	printf("Monitor thread is live!\n");
+	while (true) {
+		total_ev = 0;
+		sleep(1);	
+		system("clear");
+		printf("%s kqueue mode.\n", (test_type == kq_type_one ? "Single": "Multiple"));
 
-  if (kq_m == -1) {
-    local_kq = kqueue();
-    if (local_kq < 0) {
-      perror("kqueue");
-      abort();
-    }
-  } else {
-    local_kq = kq_m;
-  }
+		for (int i=0;i<threads_total;i++) {
+			long val = *perf_counter[i];
+			total_ev += val;
 
-  local_fd = conns[n];
-  EV_SET(&event, local_fd, EVFILT_READ, EV_ADD | EV_CLEAR, 0, 0, NULL);
-  local_ret = kevent(local_kq, &event, 1, NULL, 0, NULL);
-  if (local_ret == -1) {
-    perror("kevent");
-    abort();
-  }
+			printf("Thread %d :: Events %ld\n", i, val);
 
-
-  for (;;) {
-    int status = write(conns[n], "echo", 5);
-    if (status < 0) {
-      perror("write");
-      abort();
-    }
-
-    local_ret = kevent(local_kq, NULL, 0, &tevent, 1, NULL);
-    if (local_ret > 0) {
-#ifdef PRINT_CLIENT_ECHO
-      printf("Received packet.\n");
-#endif
-      read(local_fd, data, size);      
-    }
-
-#ifdef PRINT_CLIENT_ECHO
-    cout<<data<<endl;
-#endif
-  }
+			*(perf_counter[i]) = 0;
+		}
+		printf("kqueue total: %ld\n", total_ev);
+	}
 }
 
-int main(int argc, char *argv[]) {
-  int kq;
-  int listenfd = 0, connfd = 0;
-  int err_code;
-  struct sockaddr_in server_addr;
-  char sendBuff[10];
+/*
+ * kq_instance = -1 means one kqueue mode, otherwise pass kqueue value
+ */
+void 
+work_thread(int kq_instance, int id) 
+{
+	struct kevent event, tevent;
+	int size = CLIENT_RECV_BUFFER_SIZE;
+	char *data = new char[size];
+	int status;
 
-  test_type = kq_type_multiple;
+	vector<int> conn;
+	vector<int> conn_fd;
 
-  if (test_type == kq_type_multiple) {
-    kq = -1;
-  } else if (test_type == kq_type_one) {
-    kq = kqueue();
-  }
+	int kevent_counter = 0;
 
-  listenfd = socket(AF_INET, SOCK_STREAM, 0);
-  memset(sendBuff, 0, sizeof(sendBuff));
+	printf("Thread %d / %d started.\n", id+1, threads_total);
 
-  server_addr.sin_family = AF_INET;
-  server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-  server_addr.sin_port = htons(8999);
+	if (kq_instance == -1) {
+		kq_instance = kqueue();
+	}
+	if (kq_instance < 0) {
+		perror("kqueue");
+		abort();
+	}
+	kqs[id] = kq_instance;
 
-  listenfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-  int enable = 1;
-  if (setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0)
-    printf("setsockopt(SO_REUSEADDR) failed\n");
-    ::bind(listenfd, (struct sockaddr*)&server_addr, sizeof(server_addr));
+	while (true) {
+		int local_ret = kevent(kq_instance, NULL, 0, &tevent, 1, NULL);
+		if (local_ret > 0) {
+			int len = recv(tevent.ident, data, CLIENT_RECV_BUFFER_SIZE, 0);
+			if (len < 0) {
+				perror("client");	
+				break;
+			}
+			else if (len == 0) {
+				//client disconnected 
+				close(tevent.ident);
+				break;
+			}
+#ifdef PRINT_CLIENT_ECHO
+			printf("%s\n", data);
+#endif
+			send(tevent.ident, "echo\0", 5, 0); 
 
-  err_code = listen(listenfd, 10);
+			//after receiving and sending back, we increase the perf counter
+			(*perf_counter[id])++;
 
-  for (;;) {
-    printf("***********************************************\n");
-    printf("Waiting for connection.\n");
-    struct sockaddr_in a;
-    conns.push_back(accept(listenfd, (struct sockaddr*)NULL, NULL));
-    conns_num++;
-    threads.push_back(move(thread(client_listener, conns_num-1, kq)));  
-  }
+			EV_SET(&event, tevent.ident, EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, NULL);
+			status = kevent(kqs[id], &event, 1, NULL, 0, NULL);
+			if (status < 0) {
+				perror("kevent for connection in child thread");
+			}
+		}
+	}
 
-  return 0;
+	delete[] data;
+}
+
+int 
+main(int argc, char *argv[]) 
+{
+	int kq;
+	int listen_fd = 0, conn_fd = 0, conn_port = -1;
+	int next_thread = 0;
+	int status;
+	thread monitor_thread;
+	struct sockaddr_in server_addr;
+	char send_buff[10];
+	int ch;
+	cpuset_t cpuset;
+	
+	while ((ch = getopt(argc, argv, "smp:t:")) != -1) {
+		switch (ch) {
+			case 's':
+				test_type = kq_type_one;
+				break;
+			case 'm':
+				test_type = kq_type_multiple;
+				break;
+			case 'p':
+				conn_port = atoi(optarg);
+				break;
+			case 't':
+				threads_total = atoi(optarg);
+				if (threads_total == 0) {
+					threads_total = get_numcpus();
+				}
+				break;
+			case '?':
+			default:
+				printf("-s: single kq\n-m: multiple kq\n-p: port to be used\n-t: threads to be used(0 for all)\n");
+				exit(1);
+				break;
+		}
+	}
+	argc -= optind;
+	argv += optind;
+
+	if (argc != 0) {
+		printf("Too many arguments.");
+		exit(1);
+	}
+
+	if (conn_port <= -1) {
+		conn_port = 9898;
+	}
+
+	if (threads_total <= 0) {
+		threads_total = get_numcpus();
+	}
+
+	// don't raise SIGPIPE when sending into broken TCP connections
+	::signal(SIGPIPE, SIG_IGN); 
+
+	CPU_ZERO(&cpuset);
+
+	kqs.reserve(threads_total);
+	fill(kqs.begin(), kqs.end(), -1);
+
+	perf_counter.resize(threads_total);
+	for (auto &p: perf_counter) {
+		p = make_unique<atomic<long>>(0);
+	}
+
+	if (test_type == kq_type_multiple) {
+		kq = -1;
+	} else if (test_type == kq_type_one) {
+		kq = kqueue();
+	}
+
+	server_addr.sin_family = AF_INET;
+	server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+	server_addr.sin_port = htons(conn_port);
+
+	listen_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	if (listen_fd < 0) {
+		perror("socket");
+		abort();
+	}
+
+	int enable = 1;
+	if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable)) < 0) {
+		perror("setsockopt");
+		abort();
+	}
+
+	status = ::bind(listen_fd, (struct sockaddr*)&server_addr, sizeof(server_addr));
+	if (status < 0) {
+		perror("bind");
+		abort();
+	}
+
+	status = listen(listen_fd, 10);
+	if (status < 0) {
+		perror("listen");
+		abort();
+	}
+
+	for (int i=0;i<threads_total;i++) {
+		threads.push_back(thread(work_thread, kq, i));
+
+		// will replace this with the affinity policy later
+		int core_id = i % get_numcpus();
+
+		CPU_SET(core_id, &cpuset);
+		status = pthread_setaffinity_np(threads[i].native_handle(), sizeof(cpuset_t), &cpuset);
+		if (status < 0) {
+			perror("pthread_setaffinity_np");
+		}	
+	}
+
+	// check if all kqueue threads have been initialized.
+	// otherwise wait 5 and retry
+	while (true) {
+		bool flag = false;
+		for (int i=0;i<threads_total;i++) {
+			if (kqs[i] == -1) {
+				flag = true;
+				break;
+			}
+		}
+		if (!flag) {
+			break;
+		}
+		sleep(5);
+	}
+
+	monitor_thread = thread(mon_thread);
+
+	printf("***********************************************\n");
+	printf("Waiting for connection.\n");
+
+	while (true) {
+		struct kevent event;
+		int curr_fd = accept(listen_fd, (struct sockaddr*)NULL, NULL);
+	
+		EV_SET(&event, curr_fd, EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, NULL);
+		status = kevent(kqs[next_thread], &event, 1, NULL, 0, NULL);
+		if (status < 0) {
+			perror("kevent for connection in main thread");
+			continue;
+		}	
+
+		if (++next_thread >= threads_total) {
+			next_thread = 0;
+		}
+	}
+
+	for (int i=0;i<threads_total;i++) {
+		threads[i].join();
+	}
+	monitor_thread.join();
+
+	return 0;
 }

@@ -3,3 +3,6 @@
 kqserver
 kqserver.debug
 kqserver.full
+kqclient
+kqclient.debug
+kqclient.full
