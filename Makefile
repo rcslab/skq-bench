@@ -1,4 +1,3 @@
-
-SUBDIR= mtserver mtclient
+SUBDIR= mtserver mtclient mtmanager
 
 .include <bsd.subdir.mk>
