@@ -8,5 +8,5 @@ get_numcpus()
 
 void usage() 
 {
-	printf("-i: ip address\n-m: mgr ip address\n-p: port\n-c: control port\n");
+	printf("-c: control port\n");
 }

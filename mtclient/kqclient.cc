@@ -6,8 +6,10 @@
 #include <err.h>
 #include <time.h>
 #include <signal.h>
-#include <sys/socket.h>
+#include <sys/types.h>
 #include <sys/event.h>
+#include <netinet/tcp.h>
+#include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
@@ -32,8 +34,10 @@ int conns_total;
 int status;
 bool quit = false;
 atomic<bool> discnt;
+atomic<bool> test_begin;
 in_addr_t server_ip, mgr_ip;
 struct timespec kq_tmout = {1, 0};
+atomic<int> connect_flag;
 
 void 
 client_thread(in_addr_t ip_addr, int port, int id, int conn_count) 
@@ -44,6 +48,7 @@ client_thread(in_addr_t ip_addr, int port, int id, int conn_count)
 	string msg = "hello world from client";
 	struct kevent event, tevent;
 	bool cnt_flag = false;
+	vector<int> conns;
 
 	int kq = kqueue();
 	if (kq < 0) {
@@ -51,27 +56,68 @@ client_thread(in_addr_t ip_addr, int port, int id, int conn_count)
 		return;
 	}
 
+	while (true) {
+		if (connect_flag >= id) {
+			break;
+		}
+		usleep(200);
+	}
+
 	printf("Thread %d / %d started.\n", id+1, threads_total);
 
 	server_addr.sin_family = AF_INET;
 	server_addr.sin_port = htons(port);
 	server_addr.sin_addr.s_addr = ip_addr;
+	conns.clear();
 	// initialize all the connections
 	for (int i=0;i<conn_count;i++) {
-		conn_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-
 		struct timeval tv;
 		tv.tv_sec = 5;
 		tv.tv_usec = 0;
-		setsockopt(conn_fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
+		int enable = 1;
 
-		if (connect(conn_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) != 0) {
-			perror("connection");
-			abort();
+		
+		while (true) {
+			conn_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+			if (setsockopt(conn_fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv)) < 0) {
+				perror("setsockopt rcvtimeo");
+			}			
+			if (setsockopt(conn_fd, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(enable)) < 0) {
+				perror("setsockopt reuseport");
+			}
+			if (connect(conn_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) != 0) {
+				//printf("(%d/%d) ", i, conn_count);
+				perror("connection");
+				//abort();
+				sleep(2);
+				close(conn_fd);
+				continue;
+			} else {
+				usleep(2);
+				break;
+			}
 		}
-	
-		//EV_SET(&event, conn_fd, EVFILT_TIMER, EV_ADD | EV_ONESHOT, NOTE_ABSTIME, (unsigned long)time(NULL)+test_launch_time, NULL);
-		EV_SET(&event, conn_fd, EVFILT_TIMER, EV_ADD | EV_ONESHOT, 0, test_launch_time*1000, NULL);
+		conns.push_back(conn_fd);
+			
+		//set cnt_flag to true means there is at least one kevent registered to kq
+		cnt_flag = true;
+	}
+
+	connect_flag++;
+	printf("Thread %d has established %d connections.\n", id+1, conn_count);
+
+	while (!test_begin) {
+		sleep(1);
+	}
+	for (int i=0;i<conns.size();i++) {
+		status = send(conn_fd, msg.c_str(), msg.length(), 0);
+		if (status <= 0) {
+			perror("First send");
+			//close(conn_fd);
+			continue;
+		}
+
+		EV_SET(&event, conn_fd, EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, NULL);
 		while (true) {
 			status = kevent(kq, &event, 1, NULL, 0, NULL);
 			if (status < 0) {
@@ -81,9 +127,6 @@ client_thread(in_addr_t ip_addr, int port, int id, int conn_count)
 			}
 			break;
 		}
-			
-		//set cnt_flag to true means there is at least one kevent registered to kq
-		cnt_flag = true;
 	}
 
 	while (!discnt) {
@@ -94,22 +137,10 @@ client_thread(in_addr_t ip_addr, int port, int id, int conn_count)
 		
 		int local_ret = kevent(kq, NULL, 0, &tevent, 1, &kq_tmout);
 		if (local_ret > 0) {
-			if (tevent.filter == EVFILT_TIMER) {
-				status = send(tevent.ident, msg.c_str(), msg.length(), 0);
-				if (status <= 0) {
-					close(tevent.ident);
-					perror("First send to server");
-					continue;
-				}
-			}
 			int len = recv(tevent.ident, data, RECV_BUFFER_SIZE, 0);
 			if (len < 0) {
 				perror("recv");
 				goto set_ev;
-			}
-			if (len == 0) {
-				close(tevent.ident);
-				break;
 			}
 
 #ifdef PRINT_SERVER_ECHO
@@ -117,8 +148,11 @@ client_thread(in_addr_t ip_addr, int port, int id, int conn_count)
 #endif	
 			status = send(tevent.ident, msg.c_str(), msg.length(), 0);
 			if (status <= 0) {
-				close(tevent.ident);
-				continue;
+				if (errno == EPIPE) {
+					close(tevent.ident);
+					continue;
+				}
+				perror("send");
 			}
 
 set_ev:
@@ -131,6 +165,9 @@ set_ev:
 		}
 	}
 
+	for (int i=0;i<conns.size();i++) {
+		close(conns[i]);
+	}
 	close(kq);
 	delete[] data;
 }
@@ -141,29 +178,23 @@ main(int argc, char * argv[])
 {
 	struct sockaddr_in mgr_ctl_addr;
 	int mgr_ctl_fd;
+	int listen_fd;
 	struct Ctrl_msg ctrl_msg;
+	struct Server_info server_info;
 	int conn_port, ctl_port;
 	string ip_addr;
 	int ch;
 	ip_addr = "127.0.0.1";
-	conn_port = DEFAULT_CONN_PORT;
-	ctl_port = DEFAULT_CTL_PORT;
+	conn_port = DEFAULT_SERVER_CLIENT_CONN_PORT;
+	ctl_port = DEFAULT_CLIENT_CTL_PORT;
 	bool quit = false;
 
-	while ((ch = getopt(argc, argv, "i:p:c:m:")) != -1) {
+	while ((ch = getopt(argc, argv, "c:h")) != -1) {
 		switch (ch) {
-			case 'i':
-				ip_addr = optarg;
-				break;
-			case 'm':
-				mgr_ip = inet_addr(optarg);
-				break;
-			case 'p':
-				conn_port = atoi(optarg);			
-				break;
 			case 'c':
 				ctl_port = atoi(optarg);	
 				break;
+			case 'h':
 			case '?':
 			default:
 				usage();
@@ -181,21 +212,45 @@ main(int argc, char * argv[])
 
 	::signal(SIGPIPE, SIG_IGN);
 
-	mgr_ctl_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-	if (mgr_ctl_fd < 0) {
-		perror("ctl socket");
+	int enable = 1;
+	mgr_ctl_addr.sin_family = AF_INET;
+	mgr_ctl_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+	mgr_ctl_addr.sin_port = htons(ctl_port);
+	
+	listen_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	if (listen_fd < 0) {
+		perror("socket");
+		abort();
+	}
+	if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable)) < 0) {
+		perror("setsockopt reuseaddr");
+		abort();
+	}
+	if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(enable)) < 0) {
+        perror("setsockopt reuseport");
+        abort();
+    }
+    status = ::bind(listen_fd, (struct sockaddr*)&mgr_ctl_addr, sizeof(mgr_ctl_addr));
+	if (status < 0) {
+		perror("bind");
+		abort();
+	}
+	if (listen(listen_fd, 10) < 0) {
+		perror("ctl listen");
 		abort();
 	}
 	
-	mgr_ctl_addr.sin_family = AF_INET;
-	mgr_ctl_addr.sin_port = htons(ctl_port);
-	mgr_ctl_addr.sin_addr.s_addr = mgr_ip;
+	printf("Waiting for manager connection.\n");
 
-	if (connect(mgr_ctl_fd, (struct sockaddr*)&mgr_ctl_addr, sizeof(mgr_ctl_addr)) < 0) {
-		perror("ctl connect");
+	mgr_ctl_fd = accept(listen_fd, (struct sockaddr*)NULL, NULL);
+	close(listen_fd);
+	status = read(mgr_ctl_fd, &server_info, sizeof(server_info));
+	if (status <= 0) {
+		perror("Read server info");
 		abort();
-	}	
-
+	}
+	ip_addr = server_info.server_addr;
+	conn_port = server_info.port;
 	printf("Connected to manager.\n");
 
 	while (!quit) {
@@ -219,16 +274,22 @@ main(int argc, char * argv[])
 					printf("Thread %d / %d stopped.\n", i+1, threads_total);
 				}
 				break;
+			case MSG_TEST_START:
+				test_begin = true;
+				break;
 			case MSG_TEST_QUIT:
 				quit = true;
 				break;
-			case MSG_TEST_START:
+			case MSG_TEST_PREPARE:
 				test_launch_time = ctrl_msg.param[CTRL_MSG_IDX_LAUNCH_TIME];
 				threads_total = ctrl_msg.param[CTRL_MSG_IDX_CLIENT_THREAD_NUM];
-				conns_total = ctrl_msg.param[CTRL_MSG_IDX_CLIENT_CONNS_NUM];
+				conns_total = ctrl_msg.param[CTRL_MSG_IDX_CLIENT_CONNS_EACH_NUM];
 
+				test_begin = false;
 				discnt = false;
 				threads.clear();
+
+				connect_flag = 0;
 
 				for (int i=0;i<threads_total;i++) {
 					threads.push_back(move(thread(client_thread, inet_addr(ip_addr.c_str()), conn_port, i, 

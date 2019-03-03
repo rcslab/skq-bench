@@ -11,6 +11,7 @@
 #include <sys/socket.h>
 #include <sys/event.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <pthread_np.h>
 
@@ -81,13 +82,9 @@ work_thread(int kq_instance, int id)
 
 			if (len < 0) {
 				perror("client");	
-				close(tevent.ident);
+				//close(tevent.ident);
 				continue;
-			} else if (len == 0) {
-				//client disconnected 
-				close(tevent.ident);
-				continue;
-			}
+			} 
 #ifdef PRINT_CLIENT_ECHO
 			printf("%s\n", data);
 #endif
@@ -97,16 +94,15 @@ work_thread(int kq_instance, int id)
 			if (perf_enable) {
 				(*perf_counter[id])++;
 			}
-
-			EV_SET(&event, tevent.ident, EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, NULL);
-			status = kevent(kqs[id], &event, 1, NULL, 0, NULL);
-			if (status < 0) {
-				perror("kevent for connection in child thread");
-			}
 		} else {
 			if (discnt_flag) {
 				break;
 			}
+		}
+		EV_SET(&event, tevent.ident, EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, NULL);
+		status = kevent(kqs[id], &event, 1, NULL, 0, NULL);
+		if (status < 0) {
+			perror("kevent for connection in child thread");
 		}
 	}
 
@@ -156,11 +152,11 @@ main(int argc, char *argv[])
 	}
 
 	if (conn_port <= -1) {
-		conn_port = DEFAULT_CONN_PORT;
+		conn_port = DEFAULT_SERVER_CLIENT_CONN_PORT;
 	}
 
 	if (ctl_port <= -1) {
-		ctl_port = DEFAULT_CTL_PORT;
+		ctl_port = DEFAULT_SERVER_CTL_PORT;
 	}
 
 	// don't raise SIGPIPE when sending into broken TCP connections
@@ -170,30 +166,7 @@ main(int argc, char *argv[])
 	server_addr.sin_family = AF_INET;
 	server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
 	server_addr.sin_port = htons(conn_port);
-
-	listen_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-	if (listen_fd < 0) {
-		perror("socket");
-		abort();
-	}
-
-	if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable)) < 0) {
-		perror("setsockopt");
-		abort();
-	}
-
-	status = ::bind(listen_fd, (struct sockaddr*)&server_addr, sizeof(server_addr));
-	if (status < 0) {
-		perror("bind");
-		abort();
-	}
-
-	status = listen(listen_fd, 10);
-	if (status < 0) {
-		perror("listen");
-		abort();
-	}
-
+	
 	// setup monitor thread
 	quit = false;
 	mgr_listen_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -269,8 +242,34 @@ main(int argc, char *argv[])
 					perror("Sending perf data");
 				}
 				continue;
-			case MSG_TEST_START:
+			case MSG_TEST_PREPARE:
 				printf("Test will start.\n");
+
+				listen_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+				if (listen_fd < 0) {
+					perror("socket");
+					abort();
+				}
+				if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable)) < 0) {
+					perror("setsockopt reuseaddr");
+					abort();
+				}
+				if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(enable)) < 0) {
+					perror("setsockopt reuseport");
+					abort();
+				}
+
+				status = ::bind(listen_fd, (struct sockaddr*)&server_addr, sizeof(server_addr));
+				if (status < 0) {
+					perror("bind");
+					abort();
+				}
+
+				status = listen(listen_fd, 100000);
+				if (status < 0) {
+					perror("listen");
+					abort();
+				}
 
 				discnt_flag = false;
 
@@ -283,16 +282,16 @@ main(int argc, char *argv[])
 				kqs.clear();
 				threads.clear();
 				perf_enable = false;
-
-				kqs.reserve(threads_total);
-				fill(kqs.begin(), kqs.end(), -1);
-
+				total_ev = 0;
 				conns.clear();
 
-				total_ev = 0;
-				if (test_type == kq_type_multiple) {
-					kq = -1;
-				} else if (test_type == kq_type_one) {
+				for (int i=0;i<threads_total;i++) {
+					kqs.push_back(-1);
+				}
+
+				
+				kq = -1;
+				if (test_type == kq_type_one) {
 					kq = kqueue();
 				}
 
@@ -301,6 +300,7 @@ main(int argc, char *argv[])
 					p = make_unique<atomic<long>>(0);
 				}
 
+				
 				CPU_ZERO(&cpuset);
 				for (int i=0;i<threads_total;i++) {
 					threads.push_back(thread(work_thread, kq, i));
@@ -338,36 +338,47 @@ main(int argc, char *argv[])
 					int curr_fd = accept(listen_fd, (struct sockaddr*)NULL, NULL);
 					if (curr_fd < 0) {
 						perror("accept in main thread");
-						continue;
+						abort();
 					}
+					conn_counter -= 1;
 
 					struct timeval tv;
 					tv.tv_sec = 2;
 					tv.tv_usec = 0;
 					status = setsockopt(curr_fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
 					if (status < 0) {
-						perror("setsocketopt in main thread");
+						perror("setsocketopt rcvtimeo in main thread");
+					}
+					if (status < 0) {
+						perror("setsocketopt reuseaddr in main thread");
 					}
 
+					EV_SET(&event, curr_fd, EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, NULL);
 					while (true) {
-						EV_SET(&event, curr_fd, EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, NULL);
 						status = kevent(kqs[next_thread], &event, 1, NULL, 0, NULL);
 						if (status < 0) {
 							perror("kevent for connection in main thread");
+							printf("kq fd: %d, reg'd fd: %d\n", kqs[next_thread], curr_fd);
 							printf("Will retry soon.\n");
-							sleep(1);
+							usleep(100);
 							continue;
 						}
 						break;
 					}
-
+					
 					conns.push_back(curr_fd);
 					if (++next_thread >= threads_total) {
 						next_thread = 0;
 					}
-					if (--conn_counter <= 0) {
+					if (conn_counter <= 0) {
 						break;
 					}
+				}
+				
+				close(listen_fd);
+				ctrl_msg.cmd = MSG_TEST_START;
+				if (write(mgr_ctl_fd, &ctrl_msg, sizeof(ctrl_msg)) <= 0) {
+					perror("Sending ready signal");
 				}
 				break;
 			default:
