@@ -7,15 +7,18 @@ import numpy as np
 df = pd.read_csv("test.csv", skipinitialspace=True)
 print(df)
 
+kq = df['KQueue Count'].unique()
 conns = df['Connections Count'].unique()
 
-for c in conns:
-    onedf = df.loc[df['Connections Count'] == c]
-    plt.plot(onedf['Threads Count(Server)'],
-             onedf['Events Count'],
-             marker = 'o',
-             linestyle = ':',
-             label = c)
+for k in kq:
+    kdf = df.loc[df['KQueue Count'] == k]
+    for c in conns:
+        onedf = kdf.loc[kdf['Connections Count'] == c]
+        plt.plot(onedf['Threads Count(Server)'],
+                onedf['Events Count'],
+                marker = 'o',
+                linestyle = ':',
+                label = str(k) + "x" + str(c))
 
 plt.title('Thread Scalability')
 plt.xlabel('Threads')
