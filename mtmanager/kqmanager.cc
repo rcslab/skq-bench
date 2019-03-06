@@ -37,6 +37,8 @@ int server_fd;
 int status;
 vector<int> client_fds;
 int launch_time, test_type, server_threads_total, client_threads_total, conns_total, conns_each;
+int server_ip_num = -1;
+vector<in_addr_t> server_ips;
 bool server_discnt_flag;
 int samp = 0, samp_count = 0;
 
@@ -51,6 +53,7 @@ build_ctrl_msg(int cmd)
 	ctrl_msg.param[CTRL_MSG_IDX_CLIENT_THREAD_NUM] = client_threads_total;
 	ctrl_msg.param[CTRL_MSG_IDX_CLIENT_CONNS_NUM] = conns_total;
 	ctrl_msg.param[CTRL_MSG_IDX_CLIENT_CONNS_EACH_NUM] = conns_each;
+	ctrl_msg.param[CTRL_MSG_IDX_CLIENT_NUM] = client_count;
 	return ctrl_msg;
 }
 
@@ -84,18 +87,27 @@ client_prepare()
 void
 client_make_conn()
 {
-	int curr_client_count = 0, c_fd;
+	int server_choice = 0, curr_client_count = 0, c_fd;
 	struct sockaddr_in csock_addr;
 	struct Server_info server_info;
-
-	strcpy(server_info.server_addr, server_ip.c_str()); 
+	
+	for (int i=0;i<server_ip_num;i++) {
+		server_info.server_addr[i] = server_ips[i];	
+	}
 	server_info.port = conn_port;
+	server_info.ip_count = server_ip_num;
 
 	for (int i=0;i<client_count;i++) {
 		c_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 		csock_addr.sin_family = AF_INET;
 		csock_addr.sin_addr.s_addr = inet_addr(client_ips[i].c_str());
 		csock_addr.sin_port = htons(client_ctlport);
+
+		server_info.client_ip = inet_addr(client_ips[i].c_str());
+		server_info.choice = server_choice++;
+		if (server_choice >= server_ip_num) {
+			server_choice = 0;
+		}
 
 		printf("Connecting to client %s(%s)...\n", client_hostnames[i].c_str(), client_ips[i].c_str());
 		status = -1;
@@ -135,6 +147,16 @@ client_quit()
 	}
 }
 
+void
+init_server_ips()
+{
+	in_addr_t first_ip = inet_addr(server_ip.c_str());
+	for (int i=0;i<server_ip_num;i++) {
+		in_addr_t tmp = first_ip + htonl(i);
+		server_ips.push_back(tmp);
+	}
+}
+
 void 
 server_stop()
 {
@@ -153,6 +175,18 @@ server_prepare()
 	status = write(server_fd, &ctrl_msg, sizeof(ctrl_msg));
 	if (status < 0) {
 		perror("server_start write");
+	}
+
+	struct Server_info server_info;
+	for (int i=0;i<server_ip_num;i++) {
+		server_info.server_addr[i] = server_ips[i];
+	}
+	server_info.ip_count = server_ip_num;
+	server_info.port = conn_port;
+
+	status = write(server_fd, &server_info, sizeof(server_info));
+	if (status < 0) {
+		perror("server_start send ip");
 	}
 }
 
@@ -239,11 +273,15 @@ main(int argc, char* argv[])
 	server_ctlport = DEFAULT_SERVER_CTL_PORT;
 	conn_port = DEFAULT_SERVER_CLIENT_CONN_PORT;
 	client_ctlport = DEFAULT_CLIENT_CTL_PORT;
-	while ((ch = getopt(argc, argv, "s:P:i:c:p:n:f:o:h")) != -1) {
+	server_ip_num = 1;
+	while ((ch = getopt(argc, argv, "s:r:P:i:c:p:n:f:o:h")) != -1) {
 		switch (ch) {
 			case 's':
 				server_hostname = optarg;
 				server_ip = get_ip_from_hostname(server_hostname);
+				break;
+			case 'r':
+				server_ip_num = atoi(optarg);			
 				break;
 			case 'P':
 				server_ctlport = atoi(optarg);
@@ -291,6 +329,9 @@ main(int argc, char* argv[])
 
 	::signal(SIGPIPE, SIG_IGN);
 
+
+	init_server_ips();
+
 	client_fds.reserve(client_count);
 
 	server_make_conn();
@@ -313,7 +354,9 @@ main(int argc, char* argv[])
 
 		if (script_test_mode) {
 			//read configuration from file
-			fscanf(fp, "%d", &ch);
+			if (fscanf(fp, "%d", &ch) == 0) {
+				ch = 0;
+			}
 			if (ch == 0) {
 				server_quit();
 				client_quit();

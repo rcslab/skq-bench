@@ -35,15 +35,15 @@ int status;
 bool quit = false;
 atomic<bool> discnt;
 atomic<bool> test_begin;
-in_addr_t server_ip, mgr_ip;
+in_addr_t server_ip, mgr_ip, self_ip;
 struct timespec kq_tmout = {1, 0};
 atomic<int> connect_flag;
 
 void 
-client_thread(in_addr_t ip_addr, int port, int id, int conn_count) 
+client_thread(in_addr_t self_ip_addr, int port, int id, int conn_count)
 {
 	int conn_fd;
-	struct sockaddr_in server_addr;	
+	struct sockaddr_in server_addr, my_addr;	
 	char *data = new char[MSG_BUFFER_SIZE];
 	string msg = "hello world from client";
 	struct kevent event, tevent;
@@ -60,14 +60,17 @@ client_thread(in_addr_t ip_addr, int port, int id, int conn_count)
 		if (connect_flag >= id) {
 			break;
 		}
-		usleep(200);
+		usleep(100);
 	}
 
 	printf("Thread %d / %d started.\n", id+1, threads_total);
 
 	server_addr.sin_family = AF_INET;
 	server_addr.sin_port = htons(port);
-	server_addr.sin_addr.s_addr = ip_addr;
+	server_addr.sin_addr.s_addr = server_ip;
+
+	my_addr.sin_family = AF_INET;
+
 	conns.clear();
 	// initialize all the connections
 	for (int i=0;i<conn_count;i++) {
@@ -76,14 +79,23 @@ client_thread(in_addr_t ip_addr, int port, int id, int conn_count)
 		tv.tv_usec = 0;
 		int enable = 1;
 
-		
 		while (true) {
 			conn_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 			if (setsockopt(conn_fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv)) < 0) {
 				perror("setsockopt rcvtimeo");
-			}			
+			}	
+			if (setsockopt(conn_fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable)) < 0) {
+				perror("setsockopt reuseaddr");
+			}
 			if (setsockopt(conn_fd, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(enable)) < 0) {
 				perror("setsockopt reuseport");
+			}
+			my_addr.sin_addr.s_addr = self_ip;
+
+			status = ::bind(conn_fd, (struct sockaddr*)&my_addr, sizeof(my_addr));
+			if (status < 0) {
+				perror("bind");
+				abort();
 			}
 			if (connect(conn_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) != 0) {
 				//printf("(%d/%d) ", i, conn_count);
@@ -93,7 +105,7 @@ client_thread(in_addr_t ip_addr, int port, int id, int conn_count)
 				close(conn_fd);
 				continue;
 			} else {
-				usleep(2);
+				usleep(20);
 				break;
 			}
 		}
@@ -182,9 +194,7 @@ main(int argc, char * argv[])
 	struct Ctrl_msg ctrl_msg;
 	struct Server_info server_info;
 	int conn_port, ctl_port;
-	string ip_addr;
 	int ch;
-	ip_addr = "127.0.0.1";
 	conn_port = DEFAULT_SERVER_CLIENT_CONN_PORT;
 	ctl_port = DEFAULT_CLIENT_CTL_PORT;
 	bool quit = false;
@@ -243,14 +253,17 @@ main(int argc, char * argv[])
 	printf("Waiting for manager connection.\n");
 
 	mgr_ctl_fd = accept(listen_fd, (struct sockaddr*)NULL, NULL);
+
 	close(listen_fd);
 	status = read(mgr_ctl_fd, &server_info, sizeof(server_info));
 	if (status <= 0) {
 		perror("Read server info");
 		abort();
 	}
-	ip_addr = server_info.server_addr;
+
+	server_ip = server_info.server_addr[server_info.choice];
 	conn_port = server_info.port;
+	self_ip = server_info.client_ip;
 	printf("Connected to manager.\n");
 
 	while (!quit) {
@@ -290,9 +303,8 @@ main(int argc, char * argv[])
 				threads.clear();
 
 				connect_flag = 0;
-
 				for (int i=0;i<threads_total;i++) {
-					threads.push_back(move(thread(client_thread, inet_addr(ip_addr.c_str()), conn_port, i, 
+					threads.push_back(move(thread(client_thread, self_ip, conn_port, i, 
 									(i == threads_total-1 ? (conns_total - (conns_total / threads_total)*(threads_total-1)):(conns_total / threads_total)))));
 				}
 

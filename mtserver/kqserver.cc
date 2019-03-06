@@ -33,16 +33,59 @@ using namespace std;
 //#define PRINT_EVENT_COUNT_TO_SCREEN
 
 
+const int enable = 1;
 int threads_total = -1, conn_count = 0;
-vector<thread> threads;
-vector<int> kqs;
 bool quit = false, discnt_flag = false;
+int status;
 atomic<bool> perf_enable;
 
+vector<thread> threads;
+vector<int> kqs;
 vector<unique_ptr<atomic<long>>> perf_counter;
-Kqueue_type test_type = kq_type_multiple;
+vector<int>conns, server_socks;
+vector<int> listen_fds;
+
 struct timespec kq_tmout = {2, 0};
-vector<int>conns;
+struct sockaddr_in server_addr, ctl_addr;
+
+Kqueue_type test_type = kq_type_multiple;
+
+
+void 
+server_socket_prepare(uint32_t *ips, int num, int port) 
+{
+	int fd;
+	server_addr.sin_family = AF_INET;
+	server_addr.sin_port = htons(port);
+
+	server_socks.clear();
+	listen_fds.clear();
+	for (int i=0;i<num;i++) {
+		server_addr.sin_addr.s_addr = ips[i];
+		int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+		if (fd < 0) {
+			perror("socket");
+			abort();
+		}
+		fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+		listen_fds.push_back(fd);
+
+		if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable)) < 0) {
+			perror("setsockopt reuseaddr");
+			abort();
+		}
+		if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(enable)) < 0) {
+			perror("setsockopt reuseport");
+			abort();
+		}
+
+		status = ::bind(fd, (struct sockaddr*)&server_addr, sizeof(server_addr));
+		if (status < 0) {
+			perror("bind");
+			abort();
+		}
+	}
+}
 
 /*
  * kq_instance = -1 means one kqueue mode, otherwise pass kqueue value
@@ -114,21 +157,16 @@ int
 main(int argc, char *argv[]) 
 {
 	int kq;
-	int listen_fd = 0, conn_fd = 0, conn_port = -1, ctl_port = -1;
+	int conn_fd = 0, conn_port = -1, ctl_port = -1;
 	int mgr_listen_fd = 0, mgr_ctl_fd = 0;
-	int next_thread = 0, test_launch_time;
-	int status;
+	int next_fd = 0, next_thread = 0, test_launch_time, total_ev = 0, ip_num = -1, ch;
 	struct Ctrl_msg ctrl_msg;
 	struct Perf_data perf_data;
 	int conn_counter = 0;
-	thread monitor_thread;
-	struct sockaddr_in server_addr, ctl_addr;
 	char send_buff[10];
-	int ch;
 	cpuset_t cpuset;
-	int total_ev = 0;
 	
-	while ((ch = getopt(argc, argv, "p:c:")) != -1) {
+	while ((ch = getopt(argc, argv, "p:c:b:n:")) != -1) {
 		switch (ch) {
 			case 'p':
 				conn_port = atoi(optarg);
@@ -150,27 +188,20 @@ main(int argc, char *argv[])
 		printf("Too many arguments.");
 		exit(1);
 	}
-
 	if (conn_port <= -1) {
 		conn_port = DEFAULT_SERVER_CLIENT_CONN_PORT;
 	}
-
 	if (ctl_port <= -1) {
 		ctl_port = DEFAULT_SERVER_CTL_PORT;
 	}
 
 	// don't raise SIGPIPE when sending into broken TCP connections
 	::signal(SIGPIPE, SIG_IGN); 
-		
-	int enable = 1;
-	server_addr.sin_family = AF_INET;
-	server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-	server_addr.sin_port = htons(conn_port);
-	
+
 	// setup monitor thread
 	quit = false;
 	mgr_listen_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-	if (listen_fd < 0) {
+	if (mgr_listen_fd < 0) {
 		perror("ctl socket");
 		abort();
 	}
@@ -201,7 +232,7 @@ main(int argc, char *argv[])
 	while (!quit) {
 		printf("Waiting for command.\n");
 		status = read(mgr_ctl_fd, &ctrl_msg, sizeof(ctrl_msg));
-		if (status < 0) {
+		if (status <= 0) {
 			perror("read socket command");
 			abort();
 		}
@@ -244,32 +275,14 @@ main(int argc, char *argv[])
 				continue;
 			case MSG_TEST_PREPARE:
 				printf("Test will start.\n");
-
-				listen_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-				if (listen_fd < 0) {
-					perror("socket");
-					abort();
-				}
-				if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable)) < 0) {
-					perror("setsockopt reuseaddr");
-					abort();
-				}
-				if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(enable)) < 0) {
-					perror("setsockopt reuseport");
-					abort();
-				}
-
-				status = ::bind(listen_fd, (struct sockaddr*)&server_addr, sizeof(server_addr));
+			
+				struct Server_info server_info;
+				status = read(mgr_ctl_fd, &server_info, sizeof(server_info));
 				if (status < 0) {
-					perror("bind");
+					perror("read socket server_info");
 					abort();
 				}
-
-				status = listen(listen_fd, 100000);
-				if (status < 0) {
-					perror("listen");
-					abort();
-				}
+				server_socket_prepare(server_info.server_addr, server_info.ip_count, conn_port);
 
 				discnt_flag = false;
 
@@ -288,7 +301,6 @@ main(int argc, char *argv[])
 				for (int i=0;i<threads_total;i++) {
 					kqs.push_back(-1);
 				}
-
 				
 				kq = -1;
 				if (test_type == kq_type_one) {
@@ -332,15 +344,35 @@ main(int argc, char *argv[])
 
 				conn_counter = conn_count;
 				next_thread = 0;
+				next_fd = 0;
+
+				status = listen(listen_fds[0], 10000);
+				if (status < 0) {
+					perror("listen");
+					abort();
+				}
 
 				while (true) {
 					struct kevent event;
-					int curr_fd = accept(listen_fd, (struct sockaddr*)NULL, NULL);
+					int curr_fd = accept(listen_fds[next_fd], (struct sockaddr*)NULL, NULL);
 					if (curr_fd < 0) {
 						perror("accept in main thread");
 						abort();
 					}
+					//cout<<"Accept "<<next_fd<<endl;
 					conn_counter -= 1;
+					if ((conn_count-conn_counter)%(conn_count / ctrl_msg.param[CTRL_MSG_IDX_CLIENT_NUM]) == 0) {
+						next_fd++;
+						if (next_fd >= listen_fds.size()) {
+							next_fd = 0;
+						}
+
+						status = listen(listen_fds[next_fd], 10000);
+						if (status < 0) {
+							perror("listen");
+							abort();
+						}
+					}	
 
 					struct timeval tv;
 					tv.tv_sec = 2;
@@ -365,7 +397,7 @@ main(int argc, char *argv[])
 						}
 						break;
 					}
-					
+
 					conns.push_back(curr_fd);
 					if (++next_thread >= threads_total) {
 						next_thread = 0;
@@ -375,7 +407,9 @@ main(int argc, char *argv[])
 					}
 				}
 				
-				close(listen_fd);
+				for (int i=0;i<listen_fds.size();i++) {
+					close(listen_fds[i]);
+				}
 				ctrl_msg.cmd = MSG_TEST_START;
 				if (write(mgr_ctl_fd, &ctrl_msg, sizeof(ctrl_msg)) <= 0) {
 					perror("Sending ready signal");
@@ -387,7 +421,6 @@ main(int argc, char *argv[])
 		
 	}
 
-	close(listen_fd);
 	close(mgr_ctl_fd);
 	return 0;
 }
