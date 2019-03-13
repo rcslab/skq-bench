@@ -35,15 +35,14 @@ using namespace std;
 
 const int enable = 1;
 int threads_total = -1, conn_count = 0;
-bool quit = false, discnt_flag = false;
 int status;
+bool quit = false, discnt_flag = false, enable_mtkq = false;
+
 atomic<bool> perf_enable;
 
 vector<thread> threads;
-vector<int> kqs;
 vector<unique_ptr<atomic<long>>> perf_counter;
-vector<int>conns, server_socks;
-vector<int> listen_fds;
+vector<int> kqs, listen_fds, conns, server_socks;
 
 struct timespec kq_tmout = {2, 0};
 struct sockaddr_in server_addr, ctl_addr;
@@ -106,14 +105,26 @@ work_thread(int kq_instance, int id)
 	printf("Thread %d / %d started.\n", id+1, threads_total);
 
 	if (kq_instance == -1) {
+		// multiple kq per thread mode
 		kq_instance = kqueue();
+		if (enable_mtkq) {
+			status = ioctl(kq_instance, FKQMULTI);
+			if (status == -1) {
+				perror("Oscar Tsalapatis:");
+				abort();
+			}
+		}
+	} else {
+		// single kq mode	
 	}
+	
 	if (kq_instance < 0) {
 		perror("kqueue");
 		abort();
 	}
 	kqs[id] = kq_instance;
 
+	
 	while (!discnt_flag) {
 		int local_ret = kevent(kq_instance, NULL, 0, &tevent, 1, &kq_tmout);
 		if (local_ret > 0) {
@@ -125,7 +136,6 @@ work_thread(int kq_instance, int id)
 
 			if (len < 0) {
 				perror("client");	
-				//close(tevent.ident);
 				continue;
 			} 
 #ifdef PRINT_CLIENT_ECHO
@@ -166,7 +176,7 @@ main(int argc, char *argv[])
 	char send_buff[10];
 	cpuset_t cpuset;
 	
-	while ((ch = getopt(argc, argv, "p:c:b:n:")) != -1) {
+	while ((ch = getopt(argc, argv, "p:c:")) != -1) {
 		switch (ch) {
 			case 'p':
 				conn_port = atoi(optarg);
@@ -290,6 +300,7 @@ main(int argc, char *argv[])
 				threads_total = ctrl_msg.param[CTRL_MSG_IDX_SERVER_THREAD_NUM];
 				test_launch_time = ctrl_msg.param[CTRL_MSG_IDX_LAUNCH_TIME];
 				conn_count = ctrl_msg.param[CTRL_MSG_IDX_CLIENT_CONNS_NUM];
+				enable_mtkq = ctrl_msg.param[CTRL_MSG_IDX_ENABLE_MTKQ];
 
 				perf_counter.clear();
 				kqs.clear();
@@ -305,14 +316,20 @@ main(int argc, char *argv[])
 				kq = -1;
 				if (test_type == kq_type_one) {
 					kq = kqueue();
+					if (enable_mtkq) {
+						status = ioctl(kq, FKQMULTI);
+						if (status == -1) {
+							perror("MTKQ:");
+							abort();
+						}
+					}
 				}
 
 				perf_counter.resize(threads_total);
 				for (auto &p: perf_counter) {
 					p = make_unique<atomic<long>>(0);
 				}
-
-				
+	
 				CPU_ZERO(&cpuset);
 				for (int i=0;i<threads_total;i++) {
 					threads.push_back(thread(work_thread, kq, i));
@@ -359,7 +376,7 @@ main(int argc, char *argv[])
 						perror("accept in main thread");
 						abort();
 					}
-					//cout<<"Accept "<<next_fd<<endl;
+
 					conn_counter -= 1;
 					if ((conn_count-conn_counter)%(conn_count / ctrl_msg.param[CTRL_MSG_IDX_CLIENT_NUM]) == 0) {
 						next_fd++;
@@ -406,10 +423,10 @@ main(int argc, char *argv[])
 						break;
 					}
 				}
-				
 				for (int i=0;i<listen_fds.size();i++) {
 					close(listen_fds[i]);
 				}
+
 				ctrl_msg.cmd = MSG_TEST_START;
 				if (write(mgr_ctl_fd, &ctrl_msg, sizeof(ctrl_msg)) <= 0) {
 					perror("Sending ready signal");

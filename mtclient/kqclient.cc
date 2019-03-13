@@ -1,6 +1,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
+#include <math.h>
 
 #include <unistd.h>
 #include <err.h>
@@ -29,6 +31,7 @@ using namespace std;
 //#define PRINT_SERVER_ECHO 
 
 vector<thread> threads;
+vector<unique_ptr<atomic<long>>> response_counter_total;
 int threads_total, test_launch_time = 0;
 int conns_total;
 int status;
@@ -42,13 +45,15 @@ atomic<int> connect_flag;
 void 
 client_thread(in_addr_t self_ip_addr, int port, int id, int conn_count)
 {
-	int conn_fd;
+	int conn_fd, time_gap, conn_idx;
 	struct sockaddr_in server_addr, my_addr;	
 	char *data = new char[MSG_BUFFER_SIZE];
 	string msg = "hello world from client";
 	struct kevent event, tevent;
 	bool cnt_flag = false;
 	vector<int> conns;
+	vector<vector<uint64_t>> response_counter; /* avg/count/last timestamp */
+	struct timespec tp;
 
 	int kq = kqueue();
 	if (kq < 0) {
@@ -70,6 +75,7 @@ client_thread(in_addr_t self_ip_addr, int port, int id, int conn_count)
 	server_addr.sin_addr.s_addr = server_ip;
 
 	my_addr.sin_family = AF_INET;
+	my_addr.sin_port = htons(0);
 
 	conns.clear();
 	// initialize all the connections
@@ -87,7 +93,7 @@ client_thread(in_addr_t self_ip_addr, int port, int id, int conn_count)
 			if (setsockopt(conn_fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable)) < 0) {
 				perror("setsockopt reuseaddr");
 			}
-			if (setsockopt(conn_fd, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(enable)) < 0) {
+			if (setsockopt(conn_fd, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(enable)) < 0) {
 				perror("setsockopt reuseport");
 			}
 			my_addr.sin_addr.s_addr = self_ip;
@@ -97,20 +103,19 @@ client_thread(in_addr_t self_ip_addr, int port, int id, int conn_count)
 				perror("bind");
 				abort();
 			}
+			
 			if (connect(conn_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) != 0) {
-				//printf("(%d/%d) ", i, conn_count);
 				perror("connection");
-				//abort();
 				sleep(2);
 				close(conn_fd);
 				continue;
 			} else {
+				conns.push_back(conn_fd);
 				usleep(20);
 				break;
 			}
 		}
-		conns.push_back(conn_fd);
-			
+		response_counter.push_back({0, 0, 0});	
 		//set cnt_flag to true means there is at least one kevent registered to kq
 		cnt_flag = true;
 	}
@@ -118,23 +123,32 @@ client_thread(in_addr_t self_ip_addr, int port, int id, int conn_count)
 	connect_flag++;
 	printf("Thread %d has established %d connections.\n", id+1, conn_count);
 
+	// do the first time dummy read
+	clock_gettime(CLOCK_MONOTONIC_FAST, &tp);
+
 	while (!test_begin) {
 		sleep(1);
 	}
 	for (int i=0;i<conns.size();i++) {
-		status = send(conn_fd, msg.c_str(), msg.length(), 0);
-		if (status <= 0) {
-			perror("First send");
-			//close(conn_fd);
-			continue;
+		while (true) {
+			status = send(conns[i], msg.c_str(), msg.length(), 0);
+			if (status <= 0) {
+				perror("First send");
+				//close(conn_fd);
+				usleep(200);
+				continue;
+			}
+
+			clock_gettime(CLOCK_MONOTONIC_FAST, &tp);
+			response_counter[i][2] = tp.tv_sec * TIME_SEC_FACTOR + tp.tv_nsec * TIME_USEC_FACTOR;
+			break;
 		}
 
-		EV_SET(&event, conn_fd, EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, NULL);
+		EV_SET(&event, conns[i], EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, (void *)i);
 		while (true) {
 			status = kevent(kq, &event, 1, NULL, 0, NULL);
 			if (status < 0) {
 				perror("kevent for connection in client_thread");
-				//close(conn_fd);
 				continue;
 			}
 			break;
@@ -150,9 +164,16 @@ client_thread(in_addr_t self_ip_addr, int port, int id, int conn_count)
 		int local_ret = kevent(kq, NULL, 0, &tevent, 1, &kq_tmout);
 		if (local_ret > 0) {
 			int len = recv(tevent.ident, data, RECV_BUFFER_SIZE, 0);
+			conn_idx = (int64_t)(tevent.udata);
 			if (len < 0) {
 				perror("recv");
 				goto set_ev;
+			}
+			clock_gettime(CLOCK_MONOTONIC_FAST, &tp);
+			time_gap = (tp.tv_sec * TIME_SEC_FACTOR + tp.tv_nsec * TIME_USEC_FACTOR - response_counter[conn_idx][2]);
+			if (time_gap > 0) {
+				response_counter[conn_idx][0] += time_gap;
+				response_counter[conn_idx][1]++;
 			}
 
 #ifdef PRINT_SERVER_ECHO
@@ -166,20 +187,35 @@ client_thread(in_addr_t self_ip_addr, int port, int id, int conn_count)
 				}
 				perror("send");
 			}
+			clock_gettime(CLOCK_MONOTONIC_FAST, &tp);
+			response_counter[conn_idx][2] = tp.tv_sec * TIME_SEC_FACTOR + tp.tv_nsec * TIME_USEC_FACTOR;
 
 set_ev:
-			EV_SET(&event, tevent.ident, EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, NULL);
+			EV_SET(&event, tevent.ident, EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, tevent.udata);	
 			status = kevent(kq, &event, 1, NULL, 0, NULL);
 			if (status < 0) {
 				perror("kevent for connection in child thread");
 				close(tevent.ident);
 			}
+		} else {
+			printf("Someone is timeout.\n");
 		}
 	}
 
 	for (int i=0;i<conns.size();i++) {
 		close(conns[i]);
+
+		long avg = response_counter[i][1] == 0? 0: floor(0.5f + response_counter[i][0] * 1.0f / response_counter[i][1]);
+		int idx;
+		if (avg < SAMPLING_RESPONSE_TIME_RANGE_LOW || avg > SAMPLING_RESPONSE_TIME_RANGE_HIGH) {
+			idx = (avg < SAMPLING_RESPONSE_TIME_RANGE_LOW) ? 0: SAMPLING_RESPONSE_TIME_COUNT+1;
+		} else {
+			idx = (avg - SAMPLING_RESPONSE_TIME_RANGE_LOW) / ((SAMPLING_RESPONSE_TIME_RANGE_HIGH - SAMPLING_RESPONSE_TIME_RANGE_LOW) / SAMPLING_RESPONSE_TIME_COUNT) + 1;
+		}
+		(*response_counter_total[idx]) += 1;
 	}
+
+	response_counter.clear();
 	close(kq);
 	delete[] data;
 }
@@ -278,13 +314,23 @@ main(int argc, char * argv[])
 		}
 
 		switch (ctrl_msg.cmd) {
-			case MSG_TEST_STOP:
+			case MSG_TEST_STOP:	
+				struct Perf_response_data pr_data;
+				memset(pr_data.data, 0, sizeof(pr_data.data));
 				discnt = true;
 				sleep(1);
 				printf("Received stop signal.\n");
 				for (int i=0;i<threads_total;i++) {
 					threads[i].join();
-					printf("Thread %d / %d stopped.\n", i+1, threads_total);
+					printf("Thread %d / %d stopped.\n", i+1, threads_total);	
+				}
+				for (int i=0;i<response_counter_total.size();i++) {
+					pr_data.data[i] += *(response_counter_total[i]);
+				}
+				
+				status = write(mgr_ctl_fd, &pr_data, sizeof(pr_data));
+				if (status < 0) {
+					perror("send response counter data");
 				}
 				break;
 			case MSG_TEST_START:
@@ -301,11 +347,17 @@ main(int argc, char * argv[])
 				test_begin = false;
 				discnt = false;
 				threads.clear();
+				response_counter_total.clear();
+				response_counter_total.resize(SAMPLING_RESPONSE_TIME_COUNT + 2);
+				for (auto &ptr: response_counter_total) {
+					ptr = make_unique<atomic<long>>(0);
+				}
 
 				connect_flag = 0;
 				for (int i=0;i<threads_total;i++) {
-					threads.push_back(move(thread(client_thread, self_ip, conn_port, i, 
-									(i == threads_total-1 ? (conns_total - (conns_total / threads_total)*(threads_total-1)):(conns_total / threads_total)))));
+					threads.push_back(move(thread(client_thread, self_ip, conn_port, i, \
+									(i == threads_total-1 ? \
+									 (conns_total - (conns_total / threads_total)*(threads_total-1)):(conns_total / threads_total)))));
 				}
 
 				printf("Next test will begin in %d seconds.\n", test_launch_time);

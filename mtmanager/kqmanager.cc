@@ -22,25 +22,25 @@
 #include "utils.h"
 #include "../common.h"
 
-
 using namespace std;
 
 string server_hostname;
 string server_ip;
-int server_ctlport, client_ctlport, conn_port;
 string script_name = "";
 string output_name = "test.csv";
-int client_count;
-vector<string> client_hostnames, client_ips;
-bool script_test_mode = false, csv_output = false;
+string resp_output_name = "resp.csv";
+int server_ctlport, client_count, client_ctlport, conn_port;
 int server_fd;
 int status;
-vector<int> client_fds;
+int samp = 0, samp_count = 0;
 int launch_time, test_type, server_threads_total, client_threads_total, conns_total, conns_each;
 int server_ip_num = -1;
-vector<in_addr_t> server_ips;
+long response_data[SAMPLING_RESPONSE_TIME_COUNT + 2];
+bool script_test_mode = false, csv_output = false, resp_output = false, enable_mtkq = false;
 bool server_discnt_flag;
-int samp = 0, samp_count = 0;
+vector<string> client_hostnames, client_ips;
+vector<int> client_fds;
+vector<in_addr_t> server_ips;
 
 struct Ctrl_msg 
 build_ctrl_msg(int cmd)
@@ -54,7 +54,25 @@ build_ctrl_msg(int cmd)
 	ctrl_msg.param[CTRL_MSG_IDX_CLIENT_CONNS_NUM] = conns_total;
 	ctrl_msg.param[CTRL_MSG_IDX_CLIENT_CONNS_EACH_NUM] = conns_each;
 	ctrl_msg.param[CTRL_MSG_IDX_CLIENT_NUM] = client_count;
+	ctrl_msg.param[CTRL_MSG_IDX_ENABLE_MTKQ] = enable_mtkq;
 	return ctrl_msg;
+}
+
+void
+client_get_response_data()
+{
+	memset(response_data, 0, sizeof(response_data));
+	struct Perf_response_data pr_data;
+	for (int i=0;i<client_fds.size();i++) {
+		status = read(client_fds[i], &pr_data, sizeof(pr_data));
+		if (status < 0) {
+			perror("client_get_response_data read: Inaccurate data");
+			abort();
+		}
+		for (int j=0;j<SAMPLING_RESPONSE_TIME_COUNT+2;j++) {
+			response_data[j] += pr_data.data[j];
+		}
+	}
 }
 
 void 
@@ -69,6 +87,7 @@ client_stop()
 			continue;
 		}
 	}
+	client_get_response_data();
 }
 
 void
@@ -268,13 +287,13 @@ int
 main(int argc, char* argv[]) 
 {
 	int ch;
-	FILE *fp, *fp_csv;
+	FILE *fp, *fp_csv, *resp_fp_csv;
 	thread s_thr, c_thr;
 	server_ctlport = DEFAULT_SERVER_CTL_PORT;
 	conn_port = DEFAULT_SERVER_CLIENT_CONN_PORT;
 	client_ctlport = DEFAULT_CLIENT_CTL_PORT;
 	server_ip_num = 1;
-	while ((ch = getopt(argc, argv, "s:r:P:i:c:p:n:f:o:h")) != -1) {
+	while ((ch = getopt(argc, argv, "s:r:P:i:c:p:n:f:o:he:w:")) != -1) {
 		switch (ch) {
 			case 's':
 				server_hostname = optarg;
@@ -307,6 +326,13 @@ main(int argc, char* argv[])
 				output_name = optarg;
 				csv_output = true;
 				break;
+			case 'e':
+				resp_output_name = optarg;
+				resp_output = true;
+				break;
+			case 'm':
+				enable_mtkq = true;
+				break;
 			case 'h':
 			case '?':
 			default:
@@ -329,7 +355,6 @@ main(int argc, char* argv[])
 
 	::signal(SIGPIPE, SIG_IGN);
 
-
 	init_server_ips();
 
 	client_fds.reserve(client_count);
@@ -345,8 +370,25 @@ main(int argc, char* argv[])
 	if (csv_output) {
 		fp_csv = fopen(output_name.c_str(), "w");
 		fprintf(fp_csv, "KQueue Count, Threads Count(Server), Connections Count, Events Count\n");
+		fflush(fp_csv);
 	}
 
+	if (resp_output) {
+		resp_fp_csv = fopen(resp_output_name.c_str(), "w");
+		for (int i=0;i<SAMPLING_RESPONSE_TIME_COUNT + 2;i++) {
+			if (i == 0 || i == SAMPLING_RESPONSE_TIME_COUNT + 1) {
+				int num = (i==0? SAMPLING_RESPONSE_TIME_RANGE_LOW: SAMPLING_RESPONSE_TIME_RANGE_HIGH);
+				fprintf(resp_fp_csv, (i==0? "0-%d, ": "%d-INF\n"), num);	
+			} else {
+				int num_low = SAMPLING_RESPONSE_TIME_RANGE_LOW + \
+							  (i-1)*(SAMPLING_RESPONSE_TIME_RANGE_HIGH-SAMPLING_RESPONSE_TIME_RANGE_LOW)/SAMPLING_RESPONSE_TIME_COUNT;
+				int num_high = SAMPLING_RESPONSE_TIME_RANGE_LOW + \
+							  (i)*(SAMPLING_RESPONSE_TIME_RANGE_HIGH-SAMPLING_RESPONSE_TIME_RANGE_LOW)/SAMPLING_RESPONSE_TIME_COUNT;
+				fprintf(resp_fp_csv, "%d-%d, ", num_low, num_high);	
+			}
+		}
+		fflush(resp_fp_csv);
+	}
 
 	while (true) {
 		samp = 0;
@@ -420,6 +462,12 @@ main(int argc, char* argv[])
 		server_stop();
 		client_stop();
 
+		if (resp_output) {
+			for (int i=0;i<SAMPLING_RESPONSE_TIME_COUNT+2;i++) {
+				fprintf(resp_fp_csv, (i==SAMPLING_RESPONSE_TIME_COUNT+1? "%ld\n": "%ld, "), response_data[i]);
+			}
+		}
+
 		printf("\nTest done.\n");
 	}
 
@@ -428,5 +476,8 @@ main(int argc, char* argv[])
 	}
 	if (csv_output) {
 		fclose(fp_csv);
+	}
+	if (resp_output) {
+		fclose(resp_fp_csv);
 	}
 }

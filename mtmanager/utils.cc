@@ -11,7 +11,20 @@
 void
 usage() 
 {
-	printf("Usage:\n-s: server addr.\n-P: server ctl port.\n-i: c/s conn port.\n-c: client addr.\n-p: client ctl port.\n-n: number of clients.\n-f: test script name.\n-o: test output file name.\n");
+	printf("Usage:\n");
+	printf("-s: server addr.\n");
+	printf("-r: number of server ip.\n"); 
+	printf("-P: server ctl port.\n");
+	printf("-i: c/s conn port.\n");
+	printf("-c: client addr.\n");
+	printf("-p: client ctl port.\n");
+	printf("-n: number of clients.\n");
+	printf("-f: test script name.\n");
+	printf("-o: test output file name.\n");
+	printf("-e: response time output file name.\n");
+	printf("-m: toggle new multi kq mode.\n");
+	printf("\n\n-h: show this message.\n");
+		
 }
 
 std::string 
