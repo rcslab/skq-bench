@@ -37,6 +37,7 @@ int launch_time, test_type, server_threads_total, client_threads_total, conns_to
 int server_ip_num = -1;
 long response_data[SAMPLING_RESPONSE_TIME_COUNT + 2];
 bool script_test_mode = false, csv_output = false, resp_output = false, enable_mtkq = false;
+bool server_enable_delay = false;
 bool server_discnt_flag;
 vector<string> client_hostnames, client_ips;
 vector<int> client_fds;
@@ -55,6 +56,7 @@ build_ctrl_msg(int cmd)
 	ctrl_msg.param[CTRL_MSG_IDX_CLIENT_CONNS_EACH_NUM] = conns_each;
 	ctrl_msg.param[CTRL_MSG_IDX_CLIENT_NUM] = client_count;
 	ctrl_msg.param[CTRL_MSG_IDX_ENABLE_MTKQ] = enable_mtkq;
+	ctrl_msg.param[CTRL_MSG_IDX_ENABLE_SERVER_DELAY] = server_enable_delay;
 	return ctrl_msg;
 }
 
@@ -64,7 +66,7 @@ client_get_response_data()
 	memset(response_data, 0, sizeof(response_data));
 	struct Perf_response_data pr_data;
 	for (int i=0;i<client_fds.size();i++) {
-		status = read(client_fds[i], &pr_data, sizeof(pr_data));
+		status = readbuf(client_fds[i], &pr_data, sizeof(pr_data));
 		if (status < 0) {
 			perror("client_get_response_data read: Inaccurate data");
 			abort();
@@ -95,7 +97,7 @@ client_prepare()
 {
 	struct Ctrl_msg ctrl_msg = build_ctrl_msg(MSG_TEST_PREPARE);
 	for (int i=0;i<client_fds.size();i++) {
-		status = write(client_fds[i], &ctrl_msg, sizeof(ctrl_msg));
+		status = writebuf(client_fds[i], &ctrl_msg, sizeof(ctrl_msg));
 		if (status < 0) {
 			perror("client_start write");
 			continue;
@@ -137,7 +139,7 @@ client_make_conn()
 				sleep(1);
 				continue;
 			}
-			status = write(c_fd, &server_info, sizeof(server_info));
+			status = writebuf(c_fd, &server_info, sizeof(server_info));
 			if (status < 0) {
 				perror("Send server info to client:");
 				close(c_fd);
@@ -157,7 +159,7 @@ client_quit()
 	struct Ctrl_msg ctrl_msg;
 	ctrl_msg.cmd = MSG_TEST_QUIT;
 	for (int i=0;i<client_fds.size();i++) {
-		status = write(client_fds[i], &ctrl_msg, sizeof(ctrl_msg));
+		status = writebuf(client_fds[i], &ctrl_msg, sizeof(ctrl_msg));
 		if (status < 0) {
 			perror("client_quit write");
 			continue;
@@ -181,7 +183,7 @@ server_stop()
 {
 	struct Ctrl_msg ctrl_msg;
 	ctrl_msg.cmd = MSG_TEST_STOP;
-	status = write(server_fd, &ctrl_msg, sizeof(ctrl_msg));
+	status = writebuf(server_fd, &ctrl_msg, sizeof(ctrl_msg));
 	if (status < 0) {
 		perror("server_stop write");
 	}
@@ -191,9 +193,10 @@ void
 server_prepare()
 {
 	struct Ctrl_msg ctrl_msg = build_ctrl_msg(MSG_TEST_PREPARE);
-	status = write(server_fd, &ctrl_msg, sizeof(ctrl_msg));
+	status = writebuf(server_fd, &ctrl_msg, sizeof(ctrl_msg));
 	if (status < 0) {
 		perror("server_start write");
+		abort();
 	}
 
 	struct Server_info server_info;
@@ -203,9 +206,10 @@ server_prepare()
 	server_info.ip_count = server_ip_num;
 	server_info.port = conn_port;
 
-	status = write(server_fd, &server_info, sizeof(server_info));
+	status = writebuf(server_fd, &server_info, sizeof(server_info));
 	if (status < 0) {
 		perror("server_start send ip");
+		abort();
 	}
 }
 
@@ -214,15 +218,15 @@ server_get_data(bool scn_prt)
 {
 	struct Ctrl_msg ctrl_msg;
 	ctrl_msg.cmd = MSG_TEST_GETDATA;
-	status = write(server_fd, &ctrl_msg, sizeof(ctrl_msg));
+	status = writebuf(server_fd, &ctrl_msg, sizeof(ctrl_msg));
 	if (status < 0) {
 		perror("server_get_data write");
 		return;
 	}
-	
+
 	struct Perf_data perf_data;
-	status = read(server_fd, &perf_data, sizeof(perf_data));
-	if (status <= 0) {
+	status = readbuf(server_fd, &perf_data, sizeof(perf_data));
+	if (status < 0) {
 		perror("Read perf data");
 		return;
 	}
@@ -260,7 +264,7 @@ server_quit()
 {
 	struct Ctrl_msg ctrl_msg;
 	ctrl_msg.cmd = MSG_TEST_QUIT;
-	status = write(server_fd, &ctrl_msg, sizeof(ctrl_msg));
+	status = writebuf(server_fd, &ctrl_msg, sizeof(ctrl_msg));
 	if (status < 0) {
 		perror("server_quit write");
 	}
@@ -269,14 +273,14 @@ server_quit()
 void
 server_client_start() {
 	struct Ctrl_msg ctrl_msg;
-	status = read(server_fd, &ctrl_msg, sizeof(ctrl_msg));
-	if (status <= 0) {
+	status = readbuf(server_fd, &ctrl_msg, sizeof(ctrl_msg));
+	if (status < 0) {
 		perror("Read server status data");
 		return;
 	}
 	for (int i=0;i<client_count;i++) {
-		status = write(client_fds[i], &ctrl_msg, sizeof(ctrl_msg));
-		if (status <= 0) {
+		status = writebuf(client_fds[i], &ctrl_msg, sizeof(ctrl_msg));
+		if (status < 0) {
 			perror("Send test ready data");
 			return;
 		}
@@ -293,7 +297,7 @@ main(int argc, char* argv[])
 	conn_port = DEFAULT_SERVER_CLIENT_CONN_PORT;
 	client_ctlport = DEFAULT_CLIENT_CTL_PORT;
 	server_ip_num = 1;
-	while ((ch = getopt(argc, argv, "s:r:P:i:c:p:n:f:o:he:w:")) != -1) {
+	while ((ch = getopt(argc, argv, "s:r:P:i:c:p:n:f:o:he:w:m")) != -1) {
 		switch (ch) {
 			case 's':
 				server_hostname = optarg;
@@ -408,6 +412,17 @@ main(int argc, char* argv[])
 				fscanf(fp, "%d", &sleep_time);
 				sleep(sleep_time);
 				continue;
+			} else if (ch == 3) {
+				fscanf(fp, "%d", &ch);
+				printf("Server delay toggled to ");
+				if (ch == 1) {
+					printf("ON\n");
+					server_enable_delay = true;
+				} else {
+					printf("OFF\n");
+					server_enable_delay = false;
+				}
+				continue;
 			}
 			
 			printf("Wait %d secs for the next test case.\n", TEST_SCRIPT_INTERVAL);
@@ -424,6 +439,22 @@ main(int argc, char* argv[])
 				server_quit();
 				client_quit();
 				break;
+			} else if (ch == 2) {
+				int sleep_time = 0;
+				scanf("%d", &sleep_time);
+				sleep(sleep_time);
+				continue;
+			} else if (ch == 3) {
+				scanf("%d", &ch);
+				printf("Server delay toggled to ");
+				if (ch == 1) {
+					printf("ON\n");
+					server_enable_delay = true;
+				} else {
+					printf("OFF\n");
+					server_enable_delay = false;
+				}
+				continue;
 			}
 			scanf("%d %d %d %d %d", &launch_time, &test_type, &server_threads_total, &client_threads_total, &conns_total);
 		}

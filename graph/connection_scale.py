@@ -3,8 +3,13 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
+import sys
 
-df = pd.read_csv("test.csv", skipinitialspace=True)
+if len(sys.argv) > 1:
+    df = pd.read_csv(sys.argv[1], skipinitialspace=True)
+else:
+    df = pd.read_csv("test.csv", skipinitialspace=True)
+
 print(df)
 
 kq = df['KQueue Count'].unique()
@@ -26,4 +31,3 @@ plt.ylabel('Events Per Second')
 
 plt.legend(loc='best')
 plt.show()
-

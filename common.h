@@ -11,7 +11,7 @@
 #define MSG_TEST_GETDATA 3
 #define MSG_TEST_QUIT 4
 
-#define CTRL_MSG_COUNT 8
+#define CTRL_MSG_COUNT 9
 #define CTRL_MSG_IDX_LAUNCH_TIME 0
 #define CTRL_MSG_IDX_CLIENT_NUM 1
 #define CTRL_MSG_IDX_CLIENT_THREAD_NUM 2
@@ -20,6 +20,7 @@
 #define CTRL_MSG_IDX_SERVER_THREAD_NUM 5
 #define CTRL_MSG_IDX_SERVER_TEST_TYPE 6
 #define CTRL_MSG_IDX_ENABLE_MTKQ 7
+#define CTRL_MSG_IDX_ENABLE_SERVER_DELAY 8
 
 #define SAMPLING_FREQ_IN_SEC 2
 #define SAMPLING_COUNT_FOR_AVG 5
@@ -31,12 +32,16 @@
 
 #define TEST_SCRIPT_INTERVAL 3
 
-#define TIME_SEC_FACTOR 1000000
-#define TIME_USEC_FACTOR 0.001
+#define SERVER_DELAY 100
+#define SERVER_SENDING_BATCH_NUM 4
 
 #ifndef FKQMULTI
 #define FKQMULTI  _IO('f', 89)
 #endif
+
+static const char* SERVER_STRING = "Hello world from server.";
+static const char* CLIENT_STRING = "echo";
+
 
 enum Kqueue_type {
 	kq_type_one = 0,
@@ -67,3 +72,58 @@ struct Perf_response_data {
 	int data[SAMPLING_RESPONSE_TIME_COUNT + 2];
 	//int from_id;
 };
+
+static inline uint64_t
+get_time_us() 
+{
+	struct timespec tv;
+
+	clock_gettime(CLOCK_MONOTONIC_FAST, &tv);
+
+	return tv.tv_sec * 1000000 + tv.tv_nsec / 1000;
+}
+
+static inline int
+readbuf(int fd, void *buf, int len)
+{
+	int status;
+
+	do {
+		if ((status = recv(fd, buf, len, 0)) < 0) {
+			perror("recv");
+			return -1;
+		} else if (status == 0) { // connection disconnected.
+			return -1;
+		}
+		buf = ((uint8_t *)buf) + status;
+		len -= status;
+	} while (len > 0);
+
+	return 0;
+}
+
+static inline int
+writebuf(int fd, const void *buf, int len)
+{
+	int status;
+
+	do {
+		if ((status = send(fd, buf, len, 0)) < 0) {
+			perror("send");
+			return -1;
+		} else if (status == 0) {
+			return -1;
+		}
+		buf = ((uint8_t *)buf) + status;
+		len -= status;
+	} while (len > 0);
+
+	return 0;
+}
+
+
+
+
+
+
+

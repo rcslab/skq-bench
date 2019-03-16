@@ -26,9 +26,8 @@
 using namespace std;
 
 #define ARG_COUNT 3
-#define MSG_BUFFER_SIZE 10240
-#define RECV_BUFFER_SIZE 5
-//#define PRINT_SERVER_ECHO 
+#define RECV_BUFFER_SIZE strlen(SERVER_STRING)
+//#define PRINT_SERVER_ECHO
 
 vector<thread> threads;
 vector<unique_ptr<atomic<long>>> response_counter_total;
@@ -39,7 +38,7 @@ bool quit = false;
 atomic<bool> discnt;
 atomic<bool> test_begin;
 in_addr_t server_ip, mgr_ip, self_ip;
-struct timespec kq_tmout = {1, 0};
+struct timespec kq_tmout = {0, 0};
 atomic<int> connect_flag;
 
 void 
@@ -47,13 +46,12 @@ client_thread(in_addr_t self_ip_addr, int port, int id, int conn_count)
 {
 	int conn_fd, time_gap, conn_idx;
 	struct sockaddr_in server_addr, my_addr;	
-	char *data = new char[MSG_BUFFER_SIZE];
-	string msg = "hello world from client";
-	struct kevent event, tevent;
-	bool cnt_flag = false;
+	char *data = new char[RECV_BUFFER_SIZE];
+	struct kevent event;
+	struct kevent *tevent = (struct kevent *)malloc(sizeof(struct kevent) * SERVER_SENDING_BATCH_NUM * 10);
+	bool first_send = true;
 	vector<int> conns;
 	vector<vector<uint64_t>> response_counter; /* avg/count/last timestamp */
-	struct timespec tp;
 
 	int kq = kqueue();
 	if (kq < 0) {
@@ -79,14 +77,19 @@ client_thread(in_addr_t self_ip_addr, int port, int id, int conn_count)
 
 	conns.clear();
 	// initialize all the connections
-	for (int i=0;i<conn_count;i++) {
-		struct timeval tv;
-		tv.tv_sec = 5;
-		tv.tv_usec = 0;
-		int enable = 1;
+	
+	struct timeval tv;
+	tv.tv_sec = 5;
+	tv.tv_usec = 0;
+	int enable = 1;
 
+	for (int i=0;i<conn_count;i++) {
 		while (true) {
 			conn_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+			if (conn_fd == -1) {
+				printf("Error in creating socket, will retry.\n");
+				continue;
+			}
 			if (setsockopt(conn_fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv)) < 0) {
 				perror("setsockopt rcvtimeo");
 			}	
@@ -103,106 +106,114 @@ client_thread(in_addr_t self_ip_addr, int port, int id, int conn_count)
 				perror("bind");
 				abort();
 			}
-			
-			if (connect(conn_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) != 0) {
+		
+			status = connect(conn_fd, (struct sockaddr*)&server_addr, sizeof(server_addr));
+			if (status != 0) {
 				perror("connection");
-				sleep(2);
+				sleep(1);
 				close(conn_fd);
 				continue;
-			} else {
-				conns.push_back(conn_fd);
-				usleep(20);
-				break;
-			}
+			} 
+
+			conns.push_back(conn_fd);
+			usleep(50);
+			break;
 		}
 		response_counter.push_back({0, 0, 0});	
 		//set cnt_flag to true means there is at least one kevent registered to kq
-		cnt_flag = true;
 	}
 
 	connect_flag++;
 	printf("Thread %d has established %d connections.\n", id+1, conn_count);
 
-	// do the first time dummy read
-	clock_gettime(CLOCK_MONOTONIC_FAST, &tp);
-
 	while (!test_begin) {
 		sleep(1);
 	}
-	for (int i=0;i<conns.size();i++) {
-		while (true) {
-			status = send(conns[i], msg.c_str(), msg.length(), 0);
-			if (status <= 0) {
-				perror("First send");
-				//close(conn_fd);
-				usleep(200);
-				continue;
-			}
-
-			clock_gettime(CLOCK_MONOTONIC_FAST, &tp);
-			response_counter[i][2] = tp.tv_sec * TIME_SEC_FACTOR + tp.tv_nsec * TIME_USEC_FACTOR;
-			break;
-		}
-
-		EV_SET(&event, conns[i], EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, (void *)i);
-		while (true) {
-			status = kevent(kq, &event, 1, NULL, 0, NULL);
-			if (status < 0) {
-				perror("kevent for connection in client_thread");
-				continue;
-			}
-			break;
-		}
-	}
 
 	while (!discnt) {
-		if (!cnt_flag) {
-			printf("No any event registered to kq.\n");
-			break;
-		}
-		
-		int local_ret = kevent(kq, NULL, 0, &tevent, 1, &kq_tmout);
-		if (local_ret > 0) {
-			int len = recv(tevent.ident, data, RECV_BUFFER_SIZE, 0);
-			conn_idx = (int64_t)(tevent.udata);
-			if (len < 0) {
-				perror("recv");
-				goto set_ev;
+		for (int i=0;i<conns.size();i+=SERVER_SENDING_BATCH_NUM) {
+			if (discnt) {
+				break;
 			}
-			clock_gettime(CLOCK_MONOTONIC_FAST, &tp);
-			time_gap = (tp.tv_sec * TIME_SEC_FACTOR + tp.tv_nsec * TIME_USEC_FACTOR - response_counter[conn_idx][2]);
-			if (time_gap > 0) {
-				response_counter[conn_idx][0] += time_gap;
-				response_counter[conn_idx][1]++;
-			}
-
-#ifdef PRINT_SERVER_ECHO
-			printf("%s\n", data);
-#endif	
-			status = send(tevent.ident, msg.c_str(), msg.length(), 0);
-			if (status <= 0) {
-				if (errno == EPIPE) {
-					close(tevent.ident);
+			int je = SERVER_SENDING_BATCH_NUM < (conns.size()-i) ? SERVER_SENDING_BATCH_NUM: (conns.size()-i);
+			for (int j=0;j<je;j++) {
+				if (discnt) {
+					break;
+				}
+				conn_idx = i+j;
+				if (conns[conn_idx] == -1) {
 					continue;
 				}
-				perror("send");
-			}
-			clock_gettime(CLOCK_MONOTONIC_FAST, &tp);
-			response_counter[conn_idx][2] = tp.tv_sec * TIME_SEC_FACTOR + tp.tv_nsec * TIME_USEC_FACTOR;
+				//only calculate response time when the timestamp is clear
+				if (response_counter[conn_idx][2] == 0) {
+					status = writebuf(conns[conn_idx], CLIENT_STRING, strlen(CLIENT_STRING));
+					if (status < 0) {
+						if (errno == EPIPE) {
+							close(conns[conn_idx]);
+							conns[conn_idx] = -1;
+						}
+						printf("id>%d:[%d]%d   status: %d   conn-i:%d    j:%d\n", id, conn_idx, conns[conn_idx], status, i, j);
+						perror("First send");
+					}
+					response_counter[conn_idx][2] = get_time_us();
+				}
 
-set_ev:
-			EV_SET(&event, tevent.ident, EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, tevent.udata);	
-			status = kevent(kq, &event, 1, NULL, 0, NULL);
-			if (status < 0) {
-				perror("kevent for connection in child thread");
-				close(tevent.ident);
+				if (first_send && conns[conn_idx] != -1) {
+					EV_SET(&event, conns[conn_idx], EVFILT_READ, EV_ADD, 0, 0, (void *)conn_idx);
+					while (true) {
+						status = kevent(kq, &event, 1, NULL, 0, NULL);
+						if (status < 0) {
+							perror("kevent reg for connection in client_thread");
+							continue;
+						}
+						break;
+					}
+				}
 			}
-		} else {
-			printf("Someone is timeout.\n");
+
+			if (discnt) {
+				break;
+			}
+
+			int local_ret = kevent(kq, NULL, 0, tevent, SERVER_SENDING_BATCH_NUM * 10, &kq_tmout); 			
+			if (local_ret > 0) {
+				for (int j=0;j<local_ret;j++) {
+					if (discnt) {
+						break;
+					}
+					
+					status = readbuf(tevent[j].ident, data, RECV_BUFFER_SIZE);
+					if (status < 0) {
+						continue;
+					}
+
+					conn_idx = (int64_t)(tevent[j].udata);
+					time_gap = get_time_us() - response_counter[conn_idx][2];
+					if (time_gap > 0) {
+						response_counter[conn_idx][0] += time_gap;
+						response_counter[conn_idx][1]++;
+						response_counter[conn_idx][2] = 0;
+					}
+
+#ifdef PRINT_SERVER_ECHO
+					printf("EV(%d/%d) :: Thread_ID:%d   Conn_ID:%d   Resp_Time:%ld(TSNow:%d) -> %s\n", j, local_ret, id, conn_idx, time_gap, response_counter[conn_idx][2], data);
+#endif
+				}
+			}
+		}
+
+		first_send = false;
+		if (discnt) {
+			break;
 		}
 	}
 
+	int discnt_conn_count = 0;
 	for (int i=0;i<conns.size();i++) {
+		if (conns[i] == -1) {
+			discnt_conn_count++;
+			continue;
+		}
 		close(conns[i]);
 
 		long avg = response_counter[i][1] == 0? 0: floor(0.5f + response_counter[i][0] * 1.0f / response_counter[i][1]);
@@ -215,8 +226,13 @@ set_ev:
 		(*response_counter_total[idx]) += 1;
 	}
 
+	if (discnt_conn_count > 0) {
+		printf("Thread %d: %d connection(s) disconnected during the test.\n", id, discnt_conn_count);
+	}
+
 	response_counter.clear();
 	close(kq);
+	free(tevent);
 	delete[] data;
 }
 
@@ -291,8 +307,8 @@ main(int argc, char * argv[])
 	mgr_ctl_fd = accept(listen_fd, (struct sockaddr*)NULL, NULL);
 
 	close(listen_fd);
-	status = read(mgr_ctl_fd, &server_info, sizeof(server_info));
-	if (status <= 0) {
+	status = readbuf(mgr_ctl_fd, &server_info, sizeof(server_info));
+	if (status < 0) {
 		perror("Read server info");
 		abort();
 	}
@@ -304,13 +320,10 @@ main(int argc, char * argv[])
 
 	while (!quit) {
 		printf("Waiting for command.\n");
-		status = read(mgr_ctl_fd, &ctrl_msg, sizeof(ctrl_msg));
+		status = readbuf(mgr_ctl_fd, &ctrl_msg, sizeof(ctrl_msg));
 		if (status < 0) {
-			perror("read socket command");
-			abort();
-		} else if (status == 0) {
 			printf("Manager disconnected unexpectedly.\n");
-			break;
+			abort();
 		}
 
 		switch (ctrl_msg.cmd) {
@@ -328,7 +341,7 @@ main(int argc, char * argv[])
 					pr_data.data[i] += *(response_counter_total[i]);
 				}
 				
-				status = write(mgr_ctl_fd, &pr_data, sizeof(pr_data));
+				status = writebuf(mgr_ctl_fd, &pr_data, sizeof(pr_data));
 				if (status < 0) {
 					perror("send response counter data");
 				}

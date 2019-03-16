@@ -29,7 +29,7 @@
 using namespace std;
 
 //#define PRINT_CLIENT_ECHO
-#define CLIENT_RECV_BUFFER_SIZE 10240
+#define RECV_BUFFER_SIZE strlen(CLIENT_STRING)
 //#define PRINT_EVENT_COUNT_TO_SCREEN
 
 
@@ -37,7 +37,7 @@ const int enable = 1;
 int threads_total = -1, conn_count = 0;
 int status;
 bool quit = false, discnt_flag = false, enable_mtkq = false;
-
+bool enable_delay = false;
 atomic<bool> perf_enable;
 
 vector<thread> threads;
@@ -93,9 +93,9 @@ void
 work_thread(int kq_instance, int id) 
 {
 	struct kevent event, tevent;
-	int size = CLIENT_RECV_BUFFER_SIZE;
-	char *data = new char[size];
-	int status;
+	struct timespec delay_ts;
+	char *data = new char[RECV_BUFFER_SIZE];
+	int status, timestamp;
 
 	vector<int> conn;
 	vector<int> conn_fd;
@@ -128,20 +128,32 @@ work_thread(int kq_instance, int id)
 	while (!discnt_flag) {
 		int local_ret = kevent(kq_instance, NULL, 0, &tevent, 1, &kq_tmout);
 		if (local_ret > 0) {
-			int len = recv(tevent.ident, data, CLIENT_RECV_BUFFER_SIZE, 0);
+			status = readbuf(tevent.ident, data, RECV_BUFFER_SIZE);
 
 			if (discnt_flag) {
 				break;
 			}
 
-			if (len < 0) {
+			if (status < 0) {
 				perror("client");	
 				continue;
 			} 
 #ifdef PRINT_CLIENT_ECHO
 			printf("%s\n", data);
 #endif
-			send(tevent.ident, "echo\0", 5, 0); 
+
+			if (enable_delay) {
+				timestamp = get_time_us();
+				while (true) {
+					if (get_time_us() - timestamp > SERVER_DELAY) {
+						break;
+					}
+				}
+			}
+			status = writebuf(tevent.ident, SERVER_STRING, strlen(SERVER_STRING));
+			if (status < 0) {
+				perror("send");
+			}
 
 			//after receiving and sending back, we increase the perf counter
 			if (perf_enable) {
@@ -151,11 +163,6 @@ work_thread(int kq_instance, int id)
 			if (discnt_flag) {
 				break;
 			}
-		}
-		EV_SET(&event, tevent.ident, EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, NULL);
-		status = kevent(kqs[id], &event, 1, NULL, 0, NULL);
-		if (status < 0) {
-			perror("kevent for connection in child thread");
 		}
 	}
 
@@ -174,6 +181,7 @@ main(int argc, char *argv[])
 	struct Perf_data perf_data;
 	int conn_counter = 0;
 	char send_buff[10];
+	srand(time(NULL));
 	cpuset_t cpuset;
 	
 	while ((ch = getopt(argc, argv, "p:c:")) != -1) {
@@ -241,8 +249,8 @@ main(int argc, char *argv[])
 
 	while (!quit) {
 		printf("Waiting for command.\n");
-		status = read(mgr_ctl_fd, &ctrl_msg, sizeof(ctrl_msg));
-		if (status <= 0) {
+		status = readbuf(mgr_ctl_fd, &ctrl_msg, sizeof(ctrl_msg));
+		if (status < 0) {
 			perror("read socket command");
 			abort();
 		}
@@ -278,8 +286,10 @@ main(int argc, char *argv[])
 				perf_data.threads_total = threads_total;
 				perf_data.conn_count = conn_count;
 				perf_data.ev_count = total_ev;
+				
 
-				if (write(mgr_ctl_fd, &perf_data, sizeof(perf_data)) <= 0) {
+				status = writebuf(mgr_ctl_fd, &perf_data, sizeof(perf_data));
+				if (status < 0) {
 					perror("Sending perf data");
 				}
 				continue;
@@ -287,7 +297,7 @@ main(int argc, char *argv[])
 				printf("Test will start.\n");
 			
 				struct Server_info server_info;
-				status = read(mgr_ctl_fd, &server_info, sizeof(server_info));
+				status = readbuf(mgr_ctl_fd, &server_info, sizeof(server_info));
 				if (status < 0) {
 					perror("read socket server_info");
 					abort();
@@ -301,6 +311,7 @@ main(int argc, char *argv[])
 				test_launch_time = ctrl_msg.param[CTRL_MSG_IDX_LAUNCH_TIME];
 				conn_count = ctrl_msg.param[CTRL_MSG_IDX_CLIENT_CONNS_NUM];
 				enable_mtkq = ctrl_msg.param[CTRL_MSG_IDX_ENABLE_MTKQ];
+				enable_delay = ctrl_msg.param[CTRL_MSG_IDX_ENABLE_SERVER_DELAY];
 
 				perf_counter.clear();
 				kqs.clear();
@@ -315,6 +326,7 @@ main(int argc, char *argv[])
 				
 				kq = -1;
 				if (test_type == kq_type_one) {
+					printf("Server will run in ONE kqueue mode.\n");
 					kq = kqueue();
 					if (enable_mtkq) {
 						status = ioctl(kq, FKQMULTI);
@@ -402,7 +414,7 @@ main(int argc, char *argv[])
 						perror("setsocketopt reuseaddr in main thread");
 					}
 
-					EV_SET(&event, curr_fd, EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, NULL);
+					EV_SET(&event, curr_fd, EVFILT_READ, EV_ADD, 0, 0, NULL);
 					while (true) {
 						status = kevent(kqs[next_thread], &event, 1, NULL, 0, NULL);
 						if (status < 0) {
@@ -428,7 +440,8 @@ main(int argc, char *argv[])
 				}
 
 				ctrl_msg.cmd = MSG_TEST_START;
-				if (write(mgr_ctl_fd, &ctrl_msg, sizeof(ctrl_msg)) <= 0) {
+				status = writebuf(mgr_ctl_fd, &ctrl_msg, sizeof(ctrl_msg));
+				if (status < 0) {
 					perror("Sending ready signal");
 				}
 				break;
