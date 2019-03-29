@@ -36,7 +36,8 @@
 #define SERVER_SENDING_BATCH_NUM 4
 
 #ifndef FKQMULTI
-#define FKQMULTI  _IO('f', 89)
+#define FKQMULTI  _IOW('f', 89, int)
+#define KQ_SCHED_QUEUE 1
 #endif
 
 static const char* SERVER_STRING = "Hello world from server.";

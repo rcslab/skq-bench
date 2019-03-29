@@ -34,6 +34,7 @@ using namespace std;
 
 
 const int enable = 1;
+const int kq_flag = KQ_SCHED_QUEUE;
 int threads_total = -1, conn_count = 0;
 int status;
 bool quit = false, discnt_flag = false, enable_mtkq = false;
@@ -108,7 +109,7 @@ work_thread(int kq_instance, int id)
 		// multiple kq per thread mode
 		kq_instance = kqueue();
 		if (enable_mtkq) {
-			status = ioctl(kq_instance, FKQMULTI);
+			status = ioctl(kq_instance, FKQMULTI, &kq_flag);
 			if (status == -1) {
 				perror("Oscar Tsalapatis:");
 				abort();
@@ -329,7 +330,7 @@ main(int argc, char *argv[])
 					printf("Server will run in ONE kqueue mode.\n");
 					kq = kqueue();
 					if (enable_mtkq) {
-						status = ioctl(kq, FKQMULTI);
+						status = ioctl(kq, FKQMULTI, &kq_flag);
 						if (status == -1) {
 							perror("MTKQ:");
 							abort();
