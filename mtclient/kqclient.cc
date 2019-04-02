@@ -20,7 +20,6 @@
 #include <iostream>
 #include <vector>
 
-#include "utils.h"
 #include "../common.h"
 
 using namespace std;
@@ -39,7 +38,7 @@ atomic<bool> discnt;
 atomic<bool> test_begin;
 in_addr_t server_ip, mgr_ip, self_ip;
 struct timespec kq_tmout = {0, 0};
-atomic<int> connect_flag;
+mutex connect_lock;
 
 void 
 client_thread(in_addr_t self_ip_addr, int port, int id, int conn_count)
@@ -59,12 +58,7 @@ client_thread(in_addr_t self_ip_addr, int port, int id, int conn_count)
 		return;
 	}
 
-	while (true) {
-		if (connect_flag >= id) {
-			break;
-		}
-		usleep(100);
-	}
+	connect_lock.lock();
 
 	printf("Thread %d / %d started.\n", id+1, threads_total);
 
@@ -78,21 +72,22 @@ client_thread(in_addr_t self_ip_addr, int port, int id, int conn_count)
 	conns.clear();
 	// initialize all the connections
 	
-	struct timeval tv;
-	tv.tv_sec = 5;
-	tv.tv_usec = 0;
-	int enable = 1;
 
 	for (int i=0;i<conn_count;i++) {
 		while (true) {
+			int enable = 1;
+			struct timeval tv = { .tv_sec = 5, tv.tv_usec = 0 };
+
 			conn_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 			if (conn_fd == -1) {
 				printf("Error in creating socket, will retry.\n");
 				continue;
 			}
+
 			if (setsockopt(conn_fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv)) < 0) {
 				perror("setsockopt rcvtimeo");
 			}	
+
 			if (setsockopt(conn_fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable)) < 0) {
 				perror("setsockopt reuseaddr");
 			}
@@ -123,7 +118,7 @@ client_thread(in_addr_t self_ip_addr, int port, int id, int conn_count)
 		//set cnt_flag to true means there is at least one kevent registered to kq
 	}
 
-	connect_flag++;
+	connect_lock.unlock();
 	printf("Thread %d has established %d connections.\n", id+1, conn_count);
 
 	while (!test_begin) {
@@ -236,6 +231,11 @@ client_thread(in_addr_t self_ip_addr, int port, int id, int conn_count)
 	delete[] data;
 }
 
+void
+usage() 
+{
+	printf("-c: control port\n");
+}
 
 int 
 main(int argc, char * argv[]) 
@@ -289,10 +289,10 @@ main(int argc, char * argv[])
 		abort();
 	}
 	if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(enable)) < 0) {
-        perror("setsockopt reuseport");
-        abort();
-    }
-    status = ::bind(listen_fd, (struct sockaddr*)&mgr_ctl_addr, sizeof(mgr_ctl_addr));
+		perror("setsockopt reuseport");
+		abort();
+	}
+	status = ::bind(listen_fd, (struct sockaddr*)&mgr_ctl_addr, sizeof(mgr_ctl_addr));
 	if (status < 0) {
 		perror("bind");
 		abort();
@@ -366,11 +366,12 @@ main(int argc, char * argv[])
 					ptr = make_unique<atomic<long>>(0);
 				}
 
-				connect_flag = 0;
 				for (int i=0;i<threads_total;i++) {
-					threads.push_back(move(thread(client_thread, self_ip, conn_port, i, \
-									(i == threads_total-1 ? \
-									 (conns_total - (conns_total / threads_total)*(threads_total-1)):(conns_total / threads_total)))));
+					int connperthread = conns_total / threads_total;
+					if (i == threads_total-1) {
+						connperthread += conns_total % threads_total;
+					}
+					threads.push_back(thread(client_thread, self_ip, conn_port, i, connperthread));
 				}
 
 				printf("Next test will begin in %d seconds.\n", test_launch_time);
@@ -378,6 +379,8 @@ main(int argc, char * argv[])
 				printf("Testing...\n");	
 				break;
 			default:
+				printf("Unknown message type!\n");
+				abort();
 				break;
 		}
 	}

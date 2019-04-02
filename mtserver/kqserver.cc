@@ -24,7 +24,6 @@
 #include <algorithm>
 
 #include "../common.h"
-#include "utils.h"
 
 using namespace std;
 
@@ -82,6 +81,12 @@ server_socket_prepare(uint32_t *ips, int num, int port)
 		status = ::bind(fd, (struct sockaddr*)&server_addr, sizeof(server_addr));
 		if (status < 0) {
 			perror("bind");
+			abort();
+		}
+
+                status = listen(fd, 10000);
+		if (status < 0) {
+			perror("listen");
 			abort();
 		}
 	}
@@ -169,6 +174,11 @@ work_thread(int kq_instance, int id)
 
 	close(kqs[id]);
 	delete[] data;
+}
+
+void
+usage() {
+	printf("-p: connection port\n-c: control port\n");
 }
 
 int 
@@ -339,7 +349,7 @@ main(int argc, char *argv[])
 				}
 
 				perf_counter.resize(threads_total);
-				for (auto &p: perf_counter) {
+				for (auto &p : perf_counter) {
 					p = make_unique<atomic<long>>(0);
 				}
 	
@@ -376,12 +386,6 @@ main(int argc, char *argv[])
 				next_thread = 0;
 				next_fd = 0;
 
-				status = listen(listen_fds[0], 10000);
-				if (status < 0) {
-					perror("listen");
-					abort();
-				}
-
 				while (true) {
 					struct kevent event;
 					int curr_fd = accept(listen_fds[next_fd], (struct sockaddr*)NULL, NULL);
@@ -396,13 +400,7 @@ main(int argc, char *argv[])
 						if (next_fd >= listen_fds.size()) {
 							next_fd = 0;
 						}
-
-						status = listen(listen_fds[next_fd], 10000);
-						if (status < 0) {
-							perror("listen");
-							abort();
-						}
-					}	
+					}
 
 					struct timeval tv;
 					tv.tv_sec = 2;
@@ -411,21 +409,12 @@ main(int argc, char *argv[])
 					if (status < 0) {
 						perror("setsocketopt rcvtimeo in main thread");
 					}
-					if (status < 0) {
-						perror("setsocketopt reuseaddr in main thread");
-					}
 
 					EV_SET(&event, curr_fd, EVFILT_READ, EV_ADD, 0, 0, NULL);
-					while (true) {
-						status = kevent(kqs[next_thread], &event, 1, NULL, 0, NULL);
-						if (status < 0) {
-							perror("kevent for connection in main thread");
-							printf("kq fd: %d, reg'd fd: %d\n", kqs[next_thread], curr_fd);
-							printf("Will retry soon.\n");
-							usleep(100);
-							continue;
-						}
-						break;
+					status = kevent(kqs[next_thread], &event, 1, NULL, 0, NULL);
+					if (status < 0) {
+						perror("kevent for connection in main thread");
+                                                abort();
 					}
 
 					conns.push_back(curr_fd);

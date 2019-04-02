@@ -1,5 +1,8 @@
+
 #include <sys/ioctl.h>
 #include <sys/event.h>
+
+#include <thread>
 
 #define DEFAULT_SERVER_CLIENT_CONN_PORT 9898
 #define DEFAULT_SERVER_CTL_PORT 9900
@@ -73,6 +76,12 @@ struct Perf_response_data {
 	int data[SAMPLING_RESPONSE_TIME_COUNT + 2];
 	//int from_id;
 };
+
+int 
+get_numcpus() 
+{
+	return std::thread::hardware_concurrency();
+}
 
 static inline uint64_t
 get_time_us() 

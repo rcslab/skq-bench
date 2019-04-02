@@ -1,5 +1,10 @@
 *\.o
+*\.csv
+*\.core
 .depend
+kqmanager
+kqmanager.debug
+kqmanager.full
 kqserver
 kqserver.debug
 kqserver.full

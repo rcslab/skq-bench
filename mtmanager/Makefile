@@ -6,6 +6,6 @@ LDADD+= -lthr
 
 MK_MAN=no
 
-SRCS= kqmanager.cc utils.cc
+SRCS= kqmanager.cc
 
 .include <bsd.prog.mk>

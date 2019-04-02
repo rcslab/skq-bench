@@ -7,19 +7,20 @@
 #include <stdio.h>
 #include <string.h>
 
-#include <unistd.h>
-#include <err.h>
-#include <signal.h>
 #include <sys/socket.h>
+#include <sys/event.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <sys/event.h>
+
+#include <unistd.h>
+#include <signal.h>
+#include <err.h>
+#include <netdb.h>
 
 #include <iostream>
 #include <vector>
 #include <thread>
 
-#include "utils.h"
 #include "../common.h"
 
 using namespace std;
@@ -287,6 +288,44 @@ server_client_start() {
 	}
 }
 
+void
+usage() 
+{
+	printf("Usage:\n");
+	printf("-s: server addr.\n");
+	printf("-r: number of server ip.\n"); 
+	printf("-P: server ctl port.\n");
+	printf("-i: c/s conn port.\n");
+	printf("-c: client addr.\n");
+	printf("-p: client ctl port.\n");
+	printf("-n: number of clients.\n");
+	printf("-f: test script name.\n");
+	printf("-o: test output file name.\n");
+	printf("-e: response time output file name.\n");
+	printf("-m: toggle new multi kq mode.\n");
+	printf("\n\n-h: show this message.\n");
+		
+}
+
+std::string 
+get_ip_from_hostname(std::string hostname) 
+{
+	static char rt[100];
+	struct in_addr **addr;
+	struct hostent *he;
+
+	if ((he = gethostbyname(hostname.c_str())) == NULL) {
+		printf("Hostname %s cannot be resolved.\n", hostname.c_str());
+		abort();
+	}
+	addr = (struct in_addr**)he->h_addr_list;
+	for (int i=0;addr[i]!=NULL;i++) {
+		strcpy(rt, inet_ntoa(*addr[i]));
+		return rt;
+	}
+	return rt;
+}
+
 int
 main(int argc, char* argv[]) 
 {
@@ -512,3 +551,4 @@ main(int argc, char* argv[])
 		fclose(resp_fp_csv);
 	}
 }
+
