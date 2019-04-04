@@ -19,10 +19,17 @@ for k in kq:
     kdf = df.loc[df['KQueue Count'] == k]
     for t in threads:
         onedf = kdf.loc[kdf['Threads Count(Server)'] == t]
-        plt.plot(onedf['Connections Count'],
-                onedf['Events Count'],
-                marker = 'o',
+        conns = onedf['Connections Count'].unique()
+        y_mean = []
+        y_std = []
+        for c in conns:
+            y = onedf.loc[onedf['Connections Count'] == c]['Events Count']
+            y_mean.append(y.mean())
+            y_std.append(y.std())
+        plt.errorbar(conns, y_mean, yerr = y_std,
+                fmt='o', #marker = 'o',
                 linestyle = ':',
+                capsize = 5,
                 label = str(k) + "x" + str(t))
 
 plt.title('Connection Scalability')
