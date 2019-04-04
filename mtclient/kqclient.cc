@@ -43,14 +43,17 @@ mutex connect_lock;
 void 
 client_thread(in_addr_t self_ip_addr, int port, int id, int conn_count)
 {
-	int conn_fd, time_gap, conn_idx;
+	int conn_fd, time_gap, conn_idx, idx;
 	struct sockaddr_in server_addr, my_addr;	
 	char *data = new char[RECV_BUFFER_SIZE];
 	struct kevent event;
 	struct kevent *tevent = (struct kevent *)malloc(sizeof(struct kevent) * SERVER_SENDING_BATCH_NUM * 10);
 	bool first_send = true;
 	vector<int> conns;
-	vector<vector<uint64_t>> response_counter; /* avg/count/last timestamp */
+	vector<int> response_ts; 
+	vector<int> response_counter;
+	response_counter.clear();
+	response_counter.resize(SAMPLING_RESPONSE_TIME_COUNT + 2);
 
 	int kq = kqueue();
 	if (kq < 0) {
@@ -70,8 +73,7 @@ client_thread(in_addr_t self_ip_addr, int port, int id, int conn_count)
 	my_addr.sin_port = htons(0);
 
 	conns.clear();
-	// initialize all the connections
-	
+	// initialize all the connections	
 
 	for (int i=0;i<conn_count;i++) {
 		while (true) {
@@ -108,13 +110,19 @@ client_thread(in_addr_t self_ip_addr, int port, int id, int conn_count)
 				sleep(1);
 				close(conn_fd);
 				continue;
-			} 
+			}
+
+			if (writebuf(conn_fd, CLIENT_STRING, strlen(CLIENT_STRING)) < 0) {
+				perror("first send");
+				close(conn_fd);
+				continue;
+			}
 
 			conns.push_back(conn_fd);
 			usleep(50);
 			break;
 		}
-		response_counter.push_back({0, 0, 0});	
+		response_ts.push_back(0);	
 		//set cnt_flag to true means there is at least one kevent registered to kq
 	}
 
@@ -140,7 +148,7 @@ client_thread(in_addr_t self_ip_addr, int port, int id, int conn_count)
 					continue;
 				}
 				//only calculate response time when the timestamp is clear
-				if (response_counter[conn_idx][2] == 0) {
+				if (response_ts[conn_idx] == 0) {
 					status = writebuf(conns[conn_idx], CLIENT_STRING, strlen(CLIENT_STRING));
 					if (status < 0) {
 						if (errno == EPIPE) {
@@ -150,7 +158,7 @@ client_thread(in_addr_t self_ip_addr, int port, int id, int conn_count)
 						printf("id>%d:[%d]%d   status: %d   conn-i:%d    j:%d\n", id, conn_idx, conns[conn_idx], status, i, j);
 						perror("First send");
 					}
-					response_counter[conn_idx][2] = get_time_us();
+					response_ts[conn_idx] = get_time_us();
 				}
 
 				if (first_send && conns[conn_idx] != -1) {
@@ -183,12 +191,15 @@ client_thread(in_addr_t self_ip_addr, int port, int id, int conn_count)
 					}
 
 					conn_idx = (int64_t)(tevent[j].udata);
-					time_gap = get_time_us() - response_counter[conn_idx][2];
-					if (time_gap > 0) {
-						response_counter[conn_idx][0] += time_gap;
-						response_counter[conn_idx][1]++;
-						response_counter[conn_idx][2] = 0;
+					time_gap = get_time_us() - response_ts[conn_idx];
+					if (time_gap < SAMPLING_RESPONSE_TIME_RANGE_LOW || time_gap > SAMPLING_RESPONSE_TIME_RANGE_HIGH) {
+						idx = (time_gap < SAMPLING_RESPONSE_TIME_RANGE_LOW) ? 0: SAMPLING_RESPONSE_TIME_COUNT+1;
+					} else {
+						idx = (time_gap - SAMPLING_RESPONSE_TIME_RANGE_LOW) / ((SAMPLING_RESPONSE_TIME_RANGE_HIGH - SAMPLING_RESPONSE_TIME_RANGE_LOW) / SAMPLING_RESPONSE_TIME_COUNT) + 1;
 					}
+
+					response_counter[idx]++;
+					response_ts[conn_idx] = 0;
 
 #ifdef PRINT_SERVER_ECHO
 					printf("EV(%d/%d) :: Thread_ID:%d   Conn_ID:%d   Resp_Time:%ld(TSNow:%d) -> %s\n", j, local_ret, id, conn_idx, time_gap, response_counter[conn_idx][2], data);
@@ -210,15 +221,10 @@ client_thread(in_addr_t self_ip_addr, int port, int id, int conn_count)
 			continue;
 		}
 		close(conns[i]);
+	}
 
-		long avg = response_counter[i][1] == 0? 0: floor(0.5f + response_counter[i][0] * 1.0f / response_counter[i][1]);
-		int idx;
-		if (avg < SAMPLING_RESPONSE_TIME_RANGE_LOW || avg > SAMPLING_RESPONSE_TIME_RANGE_HIGH) {
-			idx = (avg < SAMPLING_RESPONSE_TIME_RANGE_LOW) ? 0: SAMPLING_RESPONSE_TIME_COUNT+1;
-		} else {
-			idx = (avg - SAMPLING_RESPONSE_TIME_RANGE_LOW) / ((SAMPLING_RESPONSE_TIME_RANGE_HIGH - SAMPLING_RESPONSE_TIME_RANGE_LOW) / SAMPLING_RESPONSE_TIME_COUNT) + 1;
-		}
-		(*response_counter_total[idx]) += 1;
+	for (int i=0;i<response_counter.size();i++) {
+		(*response_counter_total[i]) += response_counter[i];
 	}
 
 	if (discnt_conn_count > 0) {

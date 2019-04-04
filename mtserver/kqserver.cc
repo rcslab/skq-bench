@@ -34,8 +34,8 @@ using namespace std;
 
 const int enable = 1;
 const int kq_flag = KQ_SCHED_QUEUE;
+int accept_kq;
 int threads_total = -1, conn_count = 0;
-int status;
 bool quit = false, discnt_flag = false, enable_mtkq = false;
 bool enable_delay = false;
 atomic<bool> perf_enable;
@@ -44,7 +44,7 @@ vector<thread> threads;
 vector<unique_ptr<atomic<long>>> perf_counter;
 vector<int> kqs, listen_fds, conns, server_socks;
 
-struct timespec kq_tmout = {2, 0};
+struct timespec kq_tmout = {2, 0}, accept_kq_tmout = {15, 0};
 struct sockaddr_in server_addr, ctl_addr;
 
 Kqueue_type test_type = kq_type_multiple;
@@ -53,7 +53,7 @@ Kqueue_type test_type = kq_type_multiple;
 void 
 server_socket_prepare(uint32_t *ips, int num, int port) 
 {
-	int fd;
+	int fd, status;
 	server_addr.sin_family = AF_INET;
 	server_addr.sin_port = htons(port);
 
@@ -84,7 +84,7 @@ server_socket_prepare(uint32_t *ips, int num, int port)
 			abort();
 		}
 
-                status = listen(fd, 10000);
+        status = listen(fd, 10000);
 		if (status < 0) {
 			perror("listen");
 			abort();
@@ -100,8 +100,8 @@ work_thread(int kq_instance, int id)
 {
 	struct kevent event, tevent;
 	struct timespec delay_ts;
-	char *data = new char[RECV_BUFFER_SIZE];
 	int status, timestamp;
+	char *data = new char[RECV_BUFFER_SIZE];
 
 	vector<int> conn;
 	vector<int> conn_fd;
@@ -141,7 +141,8 @@ work_thread(int kq_instance, int id)
 			}
 
 			if (status < 0) {
-				perror("client");	
+				perror("client");
+				close(tevent.ident);
 				continue;
 			} 
 #ifdef PRINT_CLIENT_ECHO
@@ -173,7 +174,7 @@ work_thread(int kq_instance, int id)
 	}
 
 	close(kqs[id]);
-	delete[] data;
+	delete [] data;
 }
 
 void
@@ -184,7 +185,7 @@ usage() {
 int 
 main(int argc, char *argv[]) 
 {
-	int kq;
+	int kq, status;
 	int conn_fd = 0, conn_port = -1, ctl_port = -1;
 	int mgr_listen_fd = 0, mgr_ctl_fd = 0;
 	int next_fd = 0, next_thread = 0, test_launch_time, total_ev = 0, ip_num = -1, ch;
@@ -192,6 +193,7 @@ main(int argc, char *argv[])
 	struct Perf_data perf_data;
 	int conn_counter = 0;
 	char send_buff[10];
+	char *data = new char[RECV_BUFFER_SIZE];
 	srand(time(NULL));
 	cpuset_t cpuset;
 	
@@ -385,13 +387,39 @@ main(int argc, char *argv[])
 				conn_counter = conn_count;
 				next_thread = 0;
 				next_fd = 0;
+				accept_kq = kqueue();
+				if (accept_kq < 0) {
+					perror("accept kq");
+					abort();
+				}
 
+				struct kevent event, accept_event, accept_tevent;
 				while (true) {
-					struct kevent event;
+					EV_SET(&accept_event, listen_fds[next_fd], EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, NULL);
+					while (true) {
+						if (kevent(accept_kq, &accept_event, 1, NULL, 0, NULL) < 0) {
+							perror("accept ev");
+							usleep(200);
+							continue;
+						}
+						break;
+					}	
+
+					int local_ret = kevent(accept_kq, NULL, 0, &accept_tevent, 1, &accept_kq_tmout);
+					if (local_ret < 0) {
+						if (conn_counter <= 50) {
+							printf("Accepting session closed due to timeout. %d connection(s) will be dropped.\n", conn_counter); 
+							break;
+						} else {
+							printf("Accepting session timeout. Will retry to establish remaining %d connection(s).\n", conn_counter);
+							continue;
+						}
+					}
+
 					int curr_fd = accept(listen_fds[next_fd], (struct sockaddr*)NULL, NULL);
 					if (curr_fd < 0) {
 						perror("accept in main thread");
-						abort();
+						continue;
 					}
 
 					conn_counter -= 1;
@@ -402,6 +430,14 @@ main(int argc, char *argv[])
 						}
 					}
 
+					status = readbuf(curr_fd, data, RECV_BUFFER_SIZE);
+					if (status < 0) {
+						perror("Connection test");
+						close(curr_fd);
+						break;
+					}
+
+					cout<<"conn_counter "<<conn_counter<<endl;
 					struct timeval tv;
 					tv.tv_sec = 2;
 					tv.tv_usec = 0;
@@ -414,9 +450,8 @@ main(int argc, char *argv[])
 					status = kevent(kqs[next_thread], &event, 1, NULL, 0, NULL);
 					if (status < 0) {
 						perror("kevent for connection in main thread");
-                                                abort();
 					}
-
+	
 					conns.push_back(curr_fd);
 					if (++next_thread >= threads_total) {
 						next_thread = 0;
@@ -428,6 +463,7 @@ main(int argc, char *argv[])
 				for (int i=0;i<listen_fds.size();i++) {
 					close(listen_fds[i]);
 				}
+				close(accept_kq);
 
 				ctrl_msg.cmd = MSG_TEST_START;
 				status = writebuf(mgr_ctl_fd, &ctrl_msg, sizeof(ctrl_msg));
@@ -441,6 +477,7 @@ main(int argc, char *argv[])
 		
 	}
 
+	delete[] data;
 	close(mgr_ctl_fd);
 	return 0;
 }
