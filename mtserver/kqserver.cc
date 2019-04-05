@@ -43,12 +43,12 @@ atomic<bool> perf_enable;
 vector<thread> threads;
 vector<unique_ptr<atomic<long>>> perf_counter;
 vector<int> kqs, listen_fds, conns, server_socks;
+vector<int> core_affinity;
 
 struct timespec kq_tmout = {2, 0}, accept_kq_tmout = {15, 0};
 struct sockaddr_in server_addr, ctl_addr;
 
 Kqueue_type test_type = kq_type_multiple;
-
 
 void 
 server_socket_prepare(uint32_t *ips, int num, int port) 
@@ -179,7 +179,7 @@ work_thread(int kq_instance, int id)
 
 void
 usage() {
-	printf("-p: connection port\n-c: control port\n");
+	printf("-p: connection port\n-c: control port\n-a: CPU affinity (start:end:step)\n");
 }
 
 int 
@@ -194,16 +194,42 @@ main(int argc, char *argv[])
 	int conn_counter = 0;
 	char send_buff[10];
 	char *data = new char[RECV_BUFFER_SIZE];
+	char *num_str = new char[5];
+	vector<int> cpua_ctl;// first core, last core, step 
 	srand(time(NULL));
 	cpuset_t cpuset;
 	
-	while ((ch = getopt(argc, argv, "p:c:")) != -1) {
+	while ((ch = getopt(argc, argv, "a:p:c:")) != -1) {
 		switch (ch) {
 			case 'p':
 				conn_port = atoi(optarg);
 				break;
 			case 'c':
 				ctl_port = atoi(optarg);
+				break;
+			case 'a':
+				for (int i=0;i<=strlen(optarg);i++) {
+					if (i==strlen(optarg) | optarg[i] == ':') {
+						cpua_ctl.push_back(atoi(num_str));					
+						memset(num_str, 0 , strlen(num_str));
+						continue;
+					}
+					strcat(num_str, &optarg[i]);
+				}
+				if (cpua_ctl[1] > get_numcpus()-1) {
+					printf("core id is beyond your total cores.\n");
+					abort();
+				}
+				printf("CPU core ");
+				for (int i=cpua_ctl[0];i<=cpua_ctl[1];i+=cpua_ctl[2]) {
+					core_affinity.push_back(i);
+					printf(i==cpua_ctl[1]?"%d ":"%d, ", i);
+					if (i<cpua_ctl[1] && i+cpua_ctl[2] > cpua_ctl[1]) {
+						printf("align the boundary of cpu core ids, your last step is beyond your last core id.\n");
+						abort();
+					}
+				}
+				printf("will be used.\n");
 				break;
 			case '?':
 			default:
@@ -214,6 +240,14 @@ main(int argc, char *argv[])
 	}
 	argc -= optind;
 	argv += optind;
+
+	delete [] num_str;
+
+	if (core_affinity.size() == 0) {
+		for (int i=0;i<get_numcpus();i++) {
+			core_affinity.push_back(i);
+		}
+	}
 
 	if (argc != 0) {
 		printf("Too many arguments.");
@@ -360,9 +394,9 @@ main(int argc, char *argv[])
 					threads.push_back(thread(work_thread, kq, i));
 
 					// will replace this with the affinity policy later
-					int core_id = i % get_numcpus();
+					int core_id = i % core_affinity.size();
 
-					CPU_SET(core_id, &cpuset);
+					CPU_SET(core_affinity[core_id], &cpuset);
 					status = pthread_setaffinity_np(threads[i].native_handle(), sizeof(cpuset_t), &cpuset);
 					if (status < 0) {
 						perror("pthread_setaffinity_np");
@@ -437,7 +471,6 @@ main(int argc, char *argv[])
 						break;
 					}
 
-					cout<<"conn_counter "<<conn_counter<<endl;
 					struct timeval tv;
 					tv.tv_sec = 2;
 					tv.tv_usec = 0;
