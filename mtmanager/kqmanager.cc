@@ -34,7 +34,7 @@ int server_ctlport, client_count, client_ctlport, conn_port;
 int server_fd;
 int status;
 int samp = 0, samp_count = 0;
-int launch_time, test_type, server_threads_total, client_threads_total, conns_total, conns_each;
+int launch_time, test_type, server_threads_total, client_threads_total, conns_total, conns_each, kq_flag;
 int server_ip_num = -1;
 long response_data[SAMPLING_RESPONSE_TIME_COUNT + 2];
 bool script_test_mode = false, csv_output = false, resp_output = false, enable_mtkq = false;
@@ -58,6 +58,7 @@ build_ctrl_msg(int cmd)
 	ctrl_msg.param[CTRL_MSG_IDX_CLIENT_NUM] = client_count;
 	ctrl_msg.param[CTRL_MSG_IDX_ENABLE_MTKQ] = enable_mtkq;
 	ctrl_msg.param[CTRL_MSG_IDX_ENABLE_SERVER_DELAY] = server_enable_delay;
+	ctrl_msg.param[CTRL_MSG_IDX_SERVER_KQ_FLAG] = kq_flag;
 	return ctrl_msg;
 }
 
@@ -336,7 +337,8 @@ main(int argc, char* argv[])
 	conn_port = DEFAULT_SERVER_CLIENT_CONN_PORT;
 	client_ctlport = DEFAULT_CLIENT_CTL_PORT;
 	server_ip_num = 1;
-	while ((ch = getopt(argc, argv, "s:r:P:i:c:p:n:f:o:he:w:m")) != -1) {
+	kq_flag = 0;
+	while ((ch = getopt(argc, argv, "s:r:P:i:c:p:n:f:o:he:w:m:")) != -1) {
 		switch (ch) {
 			case 's':
 				server_hostname = optarg;
@@ -375,6 +377,7 @@ main(int argc, char* argv[])
 				break;
 			case 'm':
 				enable_mtkq = true;
+				kq_flag = atoi(optarg);
 				break;
 			case 'h':
 			case '?':

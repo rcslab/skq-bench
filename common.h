@@ -14,7 +14,7 @@
 #define MSG_TEST_GETDATA 3
 #define MSG_TEST_QUIT 4
 
-#define CTRL_MSG_COUNT 9
+#define CTRL_MSG_COUNT 10
 #define CTRL_MSG_IDX_LAUNCH_TIME 0
 #define CTRL_MSG_IDX_CLIENT_NUM 1
 #define CTRL_MSG_IDX_CLIENT_THREAD_NUM 2
@@ -24,6 +24,7 @@
 #define CTRL_MSG_IDX_SERVER_TEST_TYPE 6
 #define CTRL_MSG_IDX_ENABLE_MTKQ 7
 #define CTRL_MSG_IDX_ENABLE_SERVER_DELAY 8
+#define CTRL_MSG_IDX_SERVER_KQ_FLAG 9
 
 #define SAMPLING_FREQ_IN_SEC 2
 #define SAMPLING_COUNT_FOR_AVG 5
@@ -35,12 +36,10 @@
 
 #define TEST_SCRIPT_INTERVAL 3
 
-#define SERVER_DELAY 100
 #define SERVER_SENDING_BATCH_NUM 4
 
 #ifndef FKQMULTI
 #define FKQMULTI  _IOW('f', 89, int)
-#define KQ_SCHED_QUEUE 1
 #endif
 
 static const char* SERVER_STRING = "Hello world from server.";

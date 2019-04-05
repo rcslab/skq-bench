@@ -22,6 +22,7 @@
 #include <fstream>
 #include <sstream>
 #include <algorithm>
+#include <random>
 
 #include "../common.h"
 
@@ -33,8 +34,7 @@ using namespace std;
 
 
 const int enable = 1;
-const int kq_flag = KQ_SCHED_QUEUE;
-int accept_kq;
+int accept_kq, kq_flag;
 int threads_total = -1, conn_count = 0;
 bool quit = false, discnt_flag = false, enable_mtkq = false;
 bool enable_delay = false;
@@ -100,8 +100,11 @@ work_thread(int kq_instance, int id)
 {
 	struct kevent event, tevent;
 	struct timespec delay_ts;
-	int status, timestamp;
+	int status, timestamp, server_delay;
 	char *data = new char[RECV_BUFFER_SIZE];
+
+	default_random_engine random_gen;
+	uniform_int_distribution<int> distribution(0, 99);
 
 	vector<int> conn;
 	vector<int> conn_fd;
@@ -148,11 +151,12 @@ work_thread(int kq_instance, int id)
 #ifdef PRINT_CLIENT_ECHO
 			printf("%s\n", data);
 #endif
-
+			int rand_num = distribution(random_gen);	
+			server_delay = (rand_num < 95 ? 20: (rand_num==95? 200: 50));
 			if (enable_delay) {
 				timestamp = get_time_us();
 				while (true) {
-					if (get_time_us() - timestamp > SERVER_DELAY) {
+					if (get_time_us() - timestamp > server_delay) {
 						break;
 					}
 				}
@@ -196,7 +200,6 @@ main(int argc, char *argv[])
 	char *data = new char[RECV_BUFFER_SIZE];
 	char *num_str = new char[5];
 	vector<int> cpua_ctl;// first core, last core, step 
-	srand(time(NULL));
 	cpuset_t cpuset;
 	
 	while ((ch = getopt(argc, argv, "a:p:c:")) != -1) {
@@ -270,6 +273,8 @@ main(int argc, char *argv[])
 		perror("ctl socket");
 		abort();
 	}
+	
+	kq_flag = 0;
 
 	ctl_addr.sin_family = AF_INET;
 	ctl_addr.sin_port = htons(ctl_port);
@@ -359,6 +364,7 @@ main(int argc, char *argv[])
 				conn_count = ctrl_msg.param[CTRL_MSG_IDX_CLIENT_CONNS_NUM];
 				enable_mtkq = ctrl_msg.param[CTRL_MSG_IDX_ENABLE_MTKQ];
 				enable_delay = ctrl_msg.param[CTRL_MSG_IDX_ENABLE_SERVER_DELAY];
+				kq_flag = ctrl_msg.param[CTRL_MSG_IDX_SERVER_KQ_FLAG];
 
 				perf_counter.clear();
 				kqs.clear();
@@ -381,6 +387,10 @@ main(int argc, char *argv[])
 							perror("MTKQ:");
 							abort();
 						}
+					}
+				} else {
+					if (enable_mtkq) {
+						printf("Will run with kqueue flag %d.\n", kq_flag);
 					}
 				}
 
@@ -440,14 +450,9 @@ main(int argc, char *argv[])
 					}	
 
 					int local_ret = kevent(accept_kq, NULL, 0, &accept_tevent, 1, &accept_kq_tmout);
-					if (local_ret < 0) {
-						if (conn_counter <= 50) {
-							printf("Accepting session closed due to timeout. %d connection(s) will be dropped.\n", conn_counter); 
-							break;
-						} else {
-							printf("Accepting session timeout. Will retry to establish remaining %d connection(s).\n", conn_counter);
-							continue;
-						}
+					if (local_ret <= 0) {
+						printf("Accepting session closed due to timeout. %d connection(s) will be dropped.\n", conn_counter); 
+						break;
 					}
 
 					int curr_fd = accept(listen_fds[next_fd], (struct sockaddr*)NULL, NULL);
