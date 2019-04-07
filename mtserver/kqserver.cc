@@ -100,7 +100,8 @@ work_thread(int kq_instance, int id)
 {
 	struct kevent event, tevent;
 	struct timespec delay_ts;
-	int status, timestamp, server_delay;
+	int status, server_delay;
+	uint64_t timestamp;
 	char *data = new char[RECV_BUFFER_SIZE];
 
 	default_random_engine random_gen;
@@ -398,7 +399,7 @@ main(int argc, char *argv[])
 				for (auto &p : perf_counter) {
 					p = make_unique<atomic<long>>(0);
 				}
-	
+				
 				CPU_ZERO(&cpuset);
 				for (int i=0;i<threads_total;i++) {
 					threads.push_back(thread(work_thread, kq, i));
