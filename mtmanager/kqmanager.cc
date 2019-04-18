@@ -238,9 +238,9 @@ server_get_data(bool scn_prt)
 
 	if (scn_prt) {
 		system("clear");
-		printf("\nLast ev Sample\nkq count: %d\nthreads: %d\nconnections: %d\nevents: %d\n", \
+		printf("\nLast ev Sample\nkq count: %d\nthreads: %d\nconnections: %d\nevents: %d\nioctl status:%s\nsched flag: %d\n", \
 				(perf_data.test_type == kq_type_one? 1: perf_data.threads_total), \
-				perf_data.threads_total, perf_data.conn_count, perf_data.ev_count);
+				perf_data.threads_total, perf_data.conn_count, perf_data.ev_count, (enable_mtkq==true? "Enabled":"Disabled"), kq_flag);
 	}
 }
 
