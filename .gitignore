@@ -2,6 +2,7 @@
 *\.csv
 *\.core
 .depend
+.swp
 kqmanager
 kqmanager.debug
 kqmanager.full

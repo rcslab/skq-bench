@@ -14,7 +14,7 @@
 #define MSG_TEST_GETDATA 3
 #define MSG_TEST_QUIT 4
 
-#define CTRL_MSG_COUNT 10
+#define CTRL_MSG_COUNT 11
 #define CTRL_MSG_IDX_LAUNCH_TIME 0
 #define CTRL_MSG_IDX_CLIENT_NUM 1
 #define CTRL_MSG_IDX_CLIENT_THREAD_NUM 2
@@ -25,18 +25,24 @@
 #define CTRL_MSG_IDX_ENABLE_MTKQ 7
 #define CTRL_MSG_IDX_ENABLE_SERVER_DELAY 8
 #define CTRL_MSG_IDX_SERVER_KQ_FLAG 9
+#define CTRL_MSG_IDX_CLIENT_CONNS_COOLDOWN_TIME 10
+
+#define SAMPLING_FIRST_SAMPLE_TIME 5
 
 #define SAMPLING_FREQ_IN_SEC 2
-#define SAMPLING_COUNT_FOR_AVG 5
+#define SAMPLING_COUNT_FOR_AVG 10
 #define SAMPLING_THRESHOLD 0
 
-#define SAMPLING_RESPONSE_TIME_RANGE_HIGH 10000
-#define SAMPLING_RESPONSE_TIME_RANGE_LOW 10
-#define SAMPLING_RESPONSE_TIME_COUNT 30  //outliner does not included
+#define DEFAULT_CONNECTION_COOLDOWN_TIME 100
+#define DEFAULT_CLIENT_NO_EVENT_SLEEP_TIME 50
 
+#define SAMPLING_RESPONSE_TIME_RANGE_HIGH 400
+#define SAMPLING_RESPONSE_TIME_RANGE_LOW 10
+#define SAMPLING_RESPONSE_TIME_COUNT 100  //outliner does not included
+		
 #define TEST_SCRIPT_INTERVAL 3
 
-#define SERVER_SENDING_BATCH_NUM 4
+
 
 #ifndef FKQMULTI
 #define FKQMULTI  _IOW('f', 89, int)
@@ -80,6 +86,20 @@ int
 get_numcpus() 
 {
 	return std::thread::hardware_concurrency();
+}
+
+static int
+get_sampling_response_time_range(int resp_time)
+{
+	if (resp_time < SAMPLING_RESPONSE_TIME_RANGE_LOW) {
+		return 0;
+	} else if (resp_time > SAMPLING_RESPONSE_TIME_RANGE_HIGH) {
+		return SAMPLING_RESPONSE_TIME_COUNT + 1;
+	} else {
+		return (resp_time - SAMPLING_RESPONSE_TIME_RANGE_LOW) \
+			   / ( (SAMPLING_RESPONSE_TIME_RANGE_HIGH-SAMPLING_RESPONSE_TIME_RANGE_LOW)\
+			       / SAMPLING_RESPONSE_TIME_COUNT) + 1;
+	}
 }
 
 static inline uint64_t

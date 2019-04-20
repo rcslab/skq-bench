@@ -35,7 +35,7 @@ int server_fd;
 int status;
 int samp = 0, samp_count = 0;
 int launch_time, test_type, server_threads_total, client_threads_total, conns_total, conns_each, kq_flag;
-int server_ip_num = -1;
+int server_ip_num = -1, conns_cooldown_time = DEFAULT_CONNECTION_COOLDOWN_TIME;
 long response_data[SAMPLING_RESPONSE_TIME_COUNT + 2];
 bool script_test_mode = false, csv_output = false, resp_output = false, enable_mtkq = false;
 bool server_enable_delay = false;
@@ -59,15 +59,25 @@ build_ctrl_msg(int cmd)
 	ctrl_msg.param[CTRL_MSG_IDX_ENABLE_MTKQ] = enable_mtkq;
 	ctrl_msg.param[CTRL_MSG_IDX_ENABLE_SERVER_DELAY] = server_enable_delay;
 	ctrl_msg.param[CTRL_MSG_IDX_SERVER_KQ_FLAG] = kq_flag;
+	ctrl_msg.param[CTRL_MSG_IDX_CLIENT_CONNS_COOLDOWN_TIME] = conns_cooldown_time; 
 	return ctrl_msg;
 }
 
 void
 client_get_response_data()
 {
-	memset(response_data, 0, sizeof(response_data));
 	struct Perf_response_data pr_data;
+	struct Ctrl_msg ctl_msg;
+
+	ctl_msg = build_ctrl_msg(MSG_TEST_GETDATA);
+	memset(response_data, 0, sizeof(response_data));
 	for (int i=0;i<client_fds.size();i++) {
+		status = writebuf(client_fds[i], &ctl_msg, sizeof(ctl_msg));
+		if (status < 0) {
+			perror("client_get_response_data send request");
+			abort();
+		}
+
 		status = readbuf(client_fds[i], &pr_data, sizeof(pr_data));
 		if (status < 0) {
 			perror("client_get_response_data read: Inaccurate data");
@@ -91,7 +101,7 @@ client_stop()
 			continue;
 		}
 	}
-	client_get_response_data();
+	//client_get_response_data();
 }
 
 void
@@ -421,6 +431,8 @@ main(int argc, char* argv[])
 
 	if (resp_output) {
 		resp_fp_csv = fopen(resp_output_name.c_str(), "w");
+
+		fprintf(resp_fp_csv, "Delay(us), ");
 		for (int i=0;i<SAMPLING_RESPONSE_TIME_COUNT + 2;i++) {
 			if (i == 0 || i == SAMPLING_RESPONSE_TIME_COUNT + 1) {
 				int num = (i==0? SAMPLING_RESPONSE_TIME_RANGE_LOW: SAMPLING_RESPONSE_TIME_RANGE_HIGH);
@@ -519,27 +531,35 @@ main(int argc, char* argv[])
 		server_client_start();
 		printf("Test begin.\n");
 
+		sleep(SAMPLING_FIRST_SAMPLE_TIME);
 		while (samp_count < SAMPLING_COUNT_FOR_AVG) {
 			sleep(SAMPLING_FREQ_IN_SEC);
 			printf("\r[%d/%d]Sampling..", samp_count+1, SAMPLING_COUNT_FOR_AVG);
 			server_get_data(true);
-
+			client_get_response_data();
+			
+			if (resp_output) {
+				fprintf(resp_fp_csv, "%d, ", conns_cooldown_time);
+				for (int i=0;i<SAMPLING_RESPONSE_TIME_COUNT+2;i++) {
+					fprintf(resp_fp_csv, (i==SAMPLING_RESPONSE_TIME_COUNT+1? "%ld\n": "%ld, "), response_data[i]);
+				}
+				fflush(resp_fp_csv);
+			}
 			if (csv_output) {
 				printf("\r[%d/%d]Writing to file...\n", samp_count, SAMPLING_COUNT_FOR_AVG);
 				fprintf(fp_csv, "%c, %d, %d, %d\n", (test_type==0? '1': 'n'), server_threads_total, conns_total, samp);
 				fflush(fp_csv);
 				printf("[%d/%d]Done.\n", samp_count, SAMPLING_COUNT_FOR_AVG);
 			}
+			
+			conns_cooldown_time -= (DEFAULT_CONNECTION_COOLDOWN_TIME / SAMPLING_COUNT_FOR_AVG);
+			if (samp_count == SAMPLING_COUNT_FOR_AVG - 1) {
+				conns_cooldown_time = 0;
+			}
 		}
 		
 		server_stop();
 		client_stop();
-
-		if (resp_output) {
-			for (int i=0;i<SAMPLING_RESPONSE_TIME_COUNT+2;i++) {
-				fprintf(resp_fp_csv, (i==SAMPLING_RESPONSE_TIME_COUNT+1? "%ld\n": "%ld, "), response_data[i]);
-			}
-		}
 
 		printf("\nTest done.\n");
 	}
