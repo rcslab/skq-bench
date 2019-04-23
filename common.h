@@ -42,8 +42,6 @@
 		
 #define TEST_SCRIPT_INTERVAL 3
 
-
-
 #ifndef FKQMULTI
 #define FKQMULTI  _IOW('f', 89, int)
 #endif

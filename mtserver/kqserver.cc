@@ -338,8 +338,7 @@ main(int argc, char *argv[])
 				perf_data.test_type = test_type;
 				perf_data.threads_total = threads_total;
 				perf_data.conn_count = conn_count;
-				perf_data.ev_count = total_ev;
-				
+				perf_data.ev_count = total_ev;	
 
 				status = writebuf(mgr_ctl_fd, &perf_data, sizeof(perf_data));
 				if (status < 0) {

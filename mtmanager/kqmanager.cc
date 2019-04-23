@@ -451,6 +451,7 @@ main(int argc, char* argv[])
 	while (true) {
 		samp = 0;
 		samp_count = 0;
+		conns_cooldown_time = DEFAULT_CONNECTION_COOLDOWN_TIME;
 
 		if (script_test_mode) {
 			//read configuration from file

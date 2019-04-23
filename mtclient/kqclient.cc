@@ -3,6 +3,7 @@
 #include <string.h>
 #include <time.h>
 #include <math.h>
+#include <assert.h>
 
 #include <unistd.h>
 #include <err.h>
@@ -65,6 +66,7 @@ client_thread(in_addr_t self_ip_addr, int port, int id, int conn_count)
 		int idx;
 	} conn;
 	int conn_fd, time_gap, conn_idx, idx, poll_nums, status;
+	long kq_next_ev_time;
 	queue<struct waittime_conn> waittime_queue;
 	struct timespec kq_tmout = {0, 0};
 	struct sockaddr_in server_addr, my_addr;	
@@ -174,12 +176,20 @@ client_thread(in_addr_t self_ip_addr, int port, int id, int conn_count)
 		}
 	}
 	
-	while (!discnt) {	
-		poll_nums = kevent(kq, NULL, 0, tevent, conn_count, &kq_tmout);
+	kq_next_ev_time = 0;
+	while (!discnt) {
+		if (kq_next_ev_time <= get_time_us()) {
+			kq_tmout = {0, 0};
+		} else {
+			// timespec is nanosec
+			long d = kq_next_ev_time - get_time_us();
+			kq_tmout = {0, (d > 0 ? d: 0) * 1000};
+		}
 
+		poll_nums = kevent(kq, NULL, 0, tevent, conn_count, &kq_tmout);
 		if (poll_nums > 0) {
 			if (discnt) break;
-			
+
 			for (int i=0;i<poll_nums;i++) {
 				conn_idx = (uint64_t)(tevent[i].udata);	
 
@@ -203,14 +213,13 @@ client_thread(in_addr_t self_ip_addr, int port, int id, int conn_count)
 				conn.exp = get_time_us() + conn_cooldown_time;
 				waittime_queue.push(conn);	
 			}
-
 		} else {
 			usleep(DEFAULT_CLIENT_NO_EVENT_SLEEP_TIME);
 		}
 
 		// dequeue conn if it expires
 		while (!waittime_queue.empty()) {
-			if (waittime_queue.front().exp >= get_time_us()) {
+			if (waittime_queue.front().exp <= get_time_us()) {
 				conn = waittime_queue.front();
 				waittime_queue.pop();
 
@@ -224,6 +233,7 @@ client_thread(in_addr_t self_ip_addr, int port, int id, int conn_count)
 				response_ts[conn_idx] = get_time_us();
 			}
 			else {
+				kq_next_ev_time = waittime_queue.front().exp;
 				break;
 			}
 		}
