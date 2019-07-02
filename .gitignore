@@ -12,3 +12,4 @@ kqserver.full
 kqclient
 kqclient.debug
 kqclient.full
+evcompat/build
