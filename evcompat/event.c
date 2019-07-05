@@ -117,8 +117,10 @@ event_init_flags(struct event_init_config *config)
         base->eb_flags = config->eb_flags;
         if ((config->eb_flags & EVB_MULTI) == EVB_MULTI) {
 #ifdef KQ_SCHED_SUPPORT
+            int ret;
             kqflag = config->data;
-            assert(ioctl(base->eb_kqfd, FKQMULTI, &kqflag) != -1);
+            ret = ioctl(base->eb_kqfd, FKQMULTI, &kqflag);
+            assert(ret != -1);
 #endif
         }
     }
@@ -132,14 +134,16 @@ event_base_free(struct event_base *base)
     int ret = 0;
     free(base->eb_evtbl);
     pthread_mutex_destroy(&base->lk);
-    free(base);
 
     ret = close(base->eb_kqfd);
-#ifdef DEBUG
+
+    free(base);
+
     if (ret != 0) {
-        fprintf(stderr, "event_base_free kqfd_free status %d\n", ret);
-    }
+#ifdef DEBUG
+    fprintf(stderr, "event_base_free kqfd_free status %d\n", ret);
 #endif
+    }
 }
 
 int 
@@ -246,7 +250,6 @@ event_base_loop_ex(struct event_base *base, void *args, int flags)
     struct event *ev;
 
 start:
-    ret = CS_OK;
     fd = 0;
     active_cnt = 0;
     en_cnt = 0;
@@ -321,7 +324,8 @@ start:
                  * XXX: we could batch all the events and del them in one kevent call 
                  * but requires an event_del function that handles batches 
                  */
-                assert(event_del_flags(ev, EVENT_DEL_NOBLOCK) == CS_OK);
+                 ret = event_del_flags(ev, EVENT_DEL_NOBLOCK);
+                assert(ret == CS_OK);
             } else {
                 /* Add to enable list to be re-enabled later */
                 memcpy(&enlist[en_cnt], &evlist[i], sizeof(struct kevent));
@@ -341,8 +345,9 @@ start:
 #ifdef DEBUG
         fprintf(stderr, "event_base_loop_ex re-enabling %d events\n", en_cnt);
 #endif
+        ret = kevent(base->eb_kqfd, enlist, en_cnt, NULL, 0, NULL);
         /* re-enable events, since events are active, this CANNOT fail */
-        assert(kevent(base->eb_kqfd, enlist, en_cnt, NULL, 0, NULL) == 0);
+        assert(ret == 0);
     }
 
     evb_unlock(base);

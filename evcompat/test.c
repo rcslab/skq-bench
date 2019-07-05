@@ -72,6 +72,8 @@ socket_push(int sockfd, char ch)
 
 static void test_basic_cb(int fd, short what, void *arg)
 {
+    UNUSED(what);
+
     char c;
 
     c = socket_pop(fd);
@@ -139,6 +141,9 @@ static long get_time()
 
 static void test_timeout_cb(int fd, short what, void *arg)
 {
+    UNUSED(fd);
+    UNUSED(what);
+
     *(long *) (arg) = get_time();
 }
 
@@ -194,6 +199,8 @@ struct thread_info {
 
 static void test_mult_cb(int fd, short what, void *arg)
 {
+    UNUSED(what);
+
     char c;
     struct thread_info *info = (struct thread_info *) arg;
     c = socket_pop(fd);
@@ -296,6 +303,9 @@ static int test_mult()
 /* EV_DELETE */
 static void test_delete_cb(int fd, short what, void *arg)
 {
+    UNUSED(fd);
+    UNUSED(what);
+
     (*(int *) (arg))++;
 #ifdef DEBUG
     printf("test_delete_cb called.\n");
@@ -383,6 +393,9 @@ static int test_delete()
 /* EV_DELETE + BLOCKING */
 static void test_deleteb_cb(int fd, short what, void *arg)
 {
+    UNUSED(fd);
+    UNUSED(what);
+
     sleep(3);
     (*(int*)arg)++;
 }
@@ -449,6 +462,9 @@ static int test_deleteb()
 #define TEST_OWNER_READD (4)
 static void test_owner_cb(int fd, short what, void *arg)
 {
+    UNUSED(fd);
+    UNUSED(what);
+
     struct thread_info * tinfo = (struct thread_info *)arg;
     tinfo->ev_cnt++;
     socket_pop(g_sockfd[1]);
@@ -464,6 +480,9 @@ static void test_owner_cb(int fd, short what, void *arg)
 
 static void test_owner_tcb(int fd, short what, void *arg)
 {
+    UNUSED(fd);
+    UNUSED(what);
+    
     struct thread_info * tinfo = (struct thread_info *)arg;
     tinfo->ev_cnt++;
     tinfo->end = 1;

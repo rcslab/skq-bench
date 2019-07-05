@@ -1,6 +1,7 @@
 #ifndef EVCOMPAT_INTERNAL_H
 #define EVCOMPAT_INTERNAL_H
 
+#define UNUSED(x) (void)(x)
 /* 
  * for event_base->state
  */
