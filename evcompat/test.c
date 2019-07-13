@@ -8,12 +8,20 @@
 #include <stdarg.h>
 #include <semaphore.h>
 #include <pthread.h>
+#include <assert.h>
 
 #define START_TEST(fn) start_test((fn), (#fn))
 
 typedef int (*test_fn)(void);
 
 static int index = 0;
+
+static int within_err(int val, int base, int percent)
+{
+    assert(base > 0);
+    assert(val > 0);
+    return (100 * (val - base)) < (percent * base);
+}
 
 static void start_test(test_fn fn, const char *name)
 {
@@ -129,6 +137,7 @@ static int test_basic()
 
 #define TIMEOUT_TIME (1)
 #define TIMEOUT_LOOP_TIME (5)
+#define TIMEOUT_PCTERR (1)
 
 static long get_time()
 {
@@ -173,7 +182,7 @@ static int test_timeout()
         cur = get_time();
         event_base_loop(eb, EVLOOP_ONCE);
 
-        if ((next - cur) / 1000 != TIMEOUT_TIME) {
+        if (!within_err(next - cur, 1000 * TIMEOUT_TIME, TIMEOUT_PCTERR)) {
             err("time mismatch");
         }
     }
@@ -202,7 +211,14 @@ static void test_mult_cb(int fd, short what, void *arg)
     UNUSED(what);
 
     char c;
-    struct thread_info *info = (struct thread_info *) arg;
+    struct thread_info *info;
+    struct thread_info *arr = (struct thread_info *)arg;
+
+    for (int i = 0; i < TEST_MULT_THR_CNT; i++) {
+        if (arr[i].thr == pthread_self()) {
+            info  = &arr[i];
+        }
+    }
     c = socket_pop(fd);
 
     if (c == TEST_MULT_END_CHAR) {
@@ -220,7 +236,7 @@ static void *test_mult_thread(void *arg)
 {
     struct thread_info *info = (struct thread_info *) arg;
     while (!info->end) {
-        event_base_loop_ex(info->eb, info, EVLOOP_ONCE);
+        event_base_loop(info->eb, EVLOOP_ONCE);
     }
 
     return NULL;
@@ -243,7 +259,7 @@ static int test_mult()
 
 
     eb = event_init_flags(&cfg);
-    event_set(&ev, g_sockfd[1], EV_READ | EV_PERSIST, test_mult_cb, &num_packets);
+    event_set(&ev, g_sockfd[1], EV_READ | EV_PERSIST, test_mult_cb, tinfo);
 
     if (event_base_set(eb, &ev) != CS_OK) {
         err("event_base_set");
@@ -259,6 +275,7 @@ static int test_mult()
         tinfo[i].ev_cnt = 0;
         tinfo[i].eb = eb;
         tinfo[i].tid = i;
+        tinfo[i].data = (void*)tinfo;
         pthread_create(&tinfo[i].thr, NULL, test_mult_thread, &tinfo[i]);
     }
 
@@ -566,6 +583,80 @@ static int test_owner()
     return 0;
 }
 
+/* Test owner timeout */
+
+#define TOT_CNT (6)
+static struct timeval tot_val;
+
+static void* test_owner_timeout_thread(void *arg)
+{
+    int cnt = 0;
+    long last, cur;
+    struct thread_info *tinfo = (struct thread_info *) arg;
+    struct event *ev = (struct event *)tinfo->data;
+
+    if (evtimer_add(ev, &tot_val) != CS_OK) {
+        err("evtimer_add");
+    }
+
+    while(cnt < TOT_CNT) {
+        last = get_time();
+        event_base_loop(tinfo->eb, EVLOOP_ONCE);
+        cur = get_time();
+        if (!within_err(cur - last, TIMEOUT_TIME * 1000, TIMEOUT_PCTERR)) {
+            err("timer err too large : %d, %d", cur - last, TIMEOUT_TIME);
+        }
+        cnt++;
+    }
+
+    return NULL;
+}
+
+static void test_owner_timeout_cb(int fd, short what, void *arg)
+{
+    UNUSED(fd);
+    UNUSED(what);
+    struct thread_info *tinfo = (struct thread_info *)arg;
+    struct event *ev = (struct event *)tinfo->data;
+    if (evtimer_del(ev) != CS_OK) {
+        err("evtimer_del");
+    }
+    
+    evtimer_set(ev, test_owner_timeout_cb, tinfo);
+    event_base_set(tinfo->eb, ev);
+
+    if (evtimer_add(ev, &tot_val) != CS_OK) {
+        err("evtimer_add");
+    }
+}
+
+static int test_owner_timeout()
+{
+    struct event ev;
+    struct event_base *eb;
+    tot_val.tv_usec = 0;
+    tot_val.tv_sec = TIMEOUT_TIME;
+    struct thread_info tinfo;
+
+    eb = event_init();
+    if (eb == NULL) {
+        err("event_init is null");
+    }
+
+    evtimer_set(&ev, test_owner_timeout_cb, &tinfo);
+    event_base_set(eb, &ev);
+
+    tinfo.data = (void*)&ev;
+    tinfo.eb = eb;
+    pthread_create(&tinfo.thr, NULL, test_owner_timeout_thread, &tinfo);
+
+    pthread_join(tinfo.thr, NULL);
+
+    event_base_free(eb);
+
+    return 0;
+}
+
 int main()
 {
     START_TEST(test_basic);
@@ -573,8 +664,9 @@ int main()
     START_TEST(test_deleteb);
     START_TEST(test_owner);
     START_TEST(test_timeout);
+    START_TEST(test_owner_timeout);
     START_TEST(test_mult);
-    
+
     printf("All tests finished!\n");
     return 0;
 }

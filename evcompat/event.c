@@ -13,7 +13,6 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <machine/atomic.h>
-#include "ck_ht_hash.h"
 
 static void
 ev_wait(struct event_base *eb)
@@ -46,16 +45,6 @@ static inline int next_timer_fd()
     return atomic_fetchadd_int((volatile uint32_t*)&timer_base, -1);
 }
 
-static uint32_t 
-fdhash(int fd)
-{
-    uint32_t out;
-
-    MurmurHash3_x86_32((void*) &fd, sizeof(int), HASHTBL_SEED, &out);
-
-    return out % HASHTBL_SZ;
-}
-
 static int 
 init_kevent(struct kevent *kev, struct event *ev, int flags, const struct timeval *timeout)
 {
@@ -78,22 +67,8 @@ init_kevent(struct kevent *kev, struct event *ev, int flags, const struct timeva
         return EINVAL;
     }
 
-    EV_SET(kev, ev->fd, filter, flags, fflags, data, NULL);
+    EV_SET(kev, ev->fd, filter, flags, fflags, data, ev);
     return 0;
-}
-
-
-static struct event *
-find_event(struct evlist *head, int fd)
-{
-    struct event *ret = NULL, *temp;
-    LIST_FOREACH(temp, head, entry) {
-        if (temp->fd == fd) {
-            ret = temp;
-            break;
-        }
-    }
-    return ret;
 }
 
 struct event_base *
@@ -101,12 +76,8 @@ event_init_flags(struct event_init_config *config)
 {
     struct event_base *base = malloc(sizeof(struct event_base));
     assert(base != NULL);
-    base->eb_evtbl = malloc(sizeof(struct evlist) * HASHTBL_SZ);
-    assert(base->eb_evtbl != NULL);
     pthread_mutex_init(&base->lk, NULL);
-    for (int i = 0; i < HASHTBL_SZ; i++) {
-        LIST_INIT(&base->eb_evtbl[i]);
-    }
+    pthread_cond_init(&base->stop_cv, NULL);
 
     base->eb_kqfd = kqueue();
     assert(base->eb_kqfd > 0);
@@ -132,8 +103,8 @@ void
 event_base_free(struct event_base *base)
 {
     int ret = 0;
-    free(base->eb_evtbl);
     pthread_mutex_destroy(&base->lk);
+    pthread_cond_destroy(&base->stop_cv);
 
     ret = close(base->eb_kqfd);
 
@@ -203,21 +174,23 @@ retry:
         ret = CS_OK;
     }
 
-    /* remove from base queues */
+    /* remove from base */
     ev->state &= ~EVS_PENDING;
-    LIST_REMOVE(ev, entry);
     base->eb_numev--;
-    
-    /* set changed flag */
+
+
+    /* XXX: hack to make event inactive after its changed. Memcached requires this
+     * IT requires that when an event is active and changed, no more IO is done on the file descriptor
+     */
     if ((ev->state & EVS_ACTIVE) != 0) {
-        ev->state |= EVS_CHANGED;
-#ifdef DEBUG
-        fprintf(stderr, "event_del_flags EVS_CHANGED for fd %d\n", ev->fd);
-#endif
+        ev->state &= ~EVS_ACTIVE;
+        ev->owner = NULL;
+        ev->epoch++;
     }
+
 end:
 #ifdef DEBUG
-    fprintf(stderr, "event_del_flags status %d fd %d\n", ret, ev->fd);
+    fprintf(stderr, "t %p event_del_flags status %d fd %d\n", (void*)pthread_self(), ret, ev->fd);
 #endif
     return ret;
 }
@@ -234,15 +207,14 @@ event_del(struct event *ev)
 }
 
 int 
-event_base_loop_ex(struct event_base *base, void *args, int flags)
+event_base_loop(struct event_base *base, int flags)
 {
-    void *real_arg;
     int ret;
     int fd;
-    int hash;
     struct kevent evlist[NEVENT];
     struct event *active[NEVENT];
     struct kevent enlist[NEVENT];
+    int epochs[NEVENT];
     int en_cnt;
 
     int active_cnt;
@@ -263,43 +235,44 @@ start:
     evb_unlock(base);
 
 #ifdef DEBUG
-    fprintf(stderr, "event_base_loop_ex thread %p kevent base: %p\n", pthread_self(), base);
+    fprintf(stderr, "event_base_loop t %p kevent base: %p\n", pthread_self(), base);
 #endif
 
     ret = kevent(base->eb_kqfd, NULL, 0, evlist, NEVENT, NULL);
 
 #ifdef DEBUG
-    fprintf(stderr, "event_base_loop_ex thread %p woke up base: %p\n", pthread_self(), base);
+    fprintf(stderr, "event_base_loop t %p woke up base: %p #EV: %d\n", pthread_self(), base, ret);
 #endif
 
-    if (ret < 0) {
+    /* Don't fail for SIGHUP */
+    if (ret < 0 && errno != EINTR) {
 #ifdef DEBUG
-        fprintf(stderr, "event_base_loop_ex kevent failed for kqfd %d STATUS %d\n", base->eb_kqfd, ret);
+        fprintf(stderr, "event_base_loop kevent failed for kqfd %d STATUS %d\n", base->eb_kqfd, errno);
 #endif
-        errno = ret;
-        ret = CS_ERR;
         goto end;
     }
 
-    /* traverse the list of events for that event */
     evb_lock(base);
     for (int i = 0; i < ret; i++) {
         fd = evlist[i].ident;
-        hash = fdhash(fd);
+        ev = evlist[i].udata;
 
-        ev = find_event(&base->eb_evtbl[hash], fd);
+        /* sanity check */
+        assert(ev->fd == fd);
+        assert(ev->ev_base == base);
+        
         if (ev != NULL) {
-            
             /* We cannot handle an event that's active, otherwise it implies a bug in our code. */
             assert((ev->state & EVS_ACTIVE) == 0);
 
             ev->state |= EVS_ACTIVE;
             ev->owner = pthread_self();
             active[active_cnt] = ev;
+            epochs[active_cnt] = ev->epoch;
             active_cnt++;
         } else {
 #ifdef DEBUG
-            fprintf(stderr, "event_base_loop_ex no matching struct event for fd %d\n", fd);
+            fprintf(stderr, "event_base_loop no matching struct event for fd %d\n", fd);
 #endif
         }
     }
@@ -307,18 +280,18 @@ start:
 
     for (int i = 0; i < active_cnt; i++) {
         ev = active[i];
-        real_arg = ((base->eb_flags & EVB_MULTI) == 0) ? ev->arg : args;
-        ev->fn(fd, 0, real_arg);
+        ev->fn(ev->fd, 0, ev->arg);
     }
 
     evb_lock(base);
     for (int i = 0; i < active_cnt; i++) {
         ev = active[i];
-        ev->owner = NULL;
-        ev->state &= ~EVS_ACTIVE;
 
-        if ((ev->state & EVS_CHANGED) == 0) {
-            /* Delete non-persistent events */
+        if (ev->epoch == epochs[i]) {
+            /* if the event didn't change */
+            ev->owner = NULL;
+            ev->state &= ~EVS_ACTIVE;
+
             if ((ev->type & EV_PERSIST) == 0) {
                 /* 
                  * XXX: we could batch all the events and del them in one kevent call 
@@ -333,8 +306,10 @@ start:
                 en_cnt++;            
             }
         } else {
-            /* Ignore events which are changed inside the handler function */
-            ev->state &= ~EVS_CHANGED;
+            /* ignore events that have changed */
+            #ifdef DEBUG
+            fprintf(stderr, "t %p event %d changed while active\n", (void*)pthread_self(), ev->fd);
+            #endif
         }
 
         /* wakeup threads waiting on the event */
@@ -343,10 +318,13 @@ start:
 
     if (en_cnt > 0) {
 #ifdef DEBUG
-        fprintf(stderr, "event_base_loop_ex re-enabling %d events\n", en_cnt);
+        fprintf(stderr, "t %p event_base_loop re-enabling %d events. First fd: %d\n", (void*)pthread_self(), en_cnt, (int)enlist[0].ident);
 #endif
         ret = kevent(base->eb_kqfd, enlist, en_cnt, NULL, 0, NULL);
         /* re-enable events, since events are active, this CANNOT fail */
+        if (ret != 0) {
+            fprintf(stderr, "t %p re-enabling events failed: ret %d, errno %d\n", pthread_self(), ret, errno);
+        }
         assert(ret == 0);
     }
 
@@ -357,12 +335,6 @@ start:
 
 end:
     return ret;
-}
-
-int 
-event_base_loop(struct event_base *base, int flags)
-{
-    return event_base_loop_ex(base, NULL, flags);
 }
 
 /*
@@ -401,9 +373,6 @@ event_add(struct event *ev, const struct timeval *timeout)
         ev->fd = next_timer_fd();
     }
 
-    uint32_t hash = fdhash(ev->fd);
-    assert(hash < HASHTBL_SZ);
-
     if (timeout != NULL) {
         to.tv_sec = timeout->tv_sec;
         to.tv_nsec = timeout->tv_usec * 1000;
@@ -435,22 +404,23 @@ event_add(struct event *ev, const struct timeval *timeout)
     }
 
     base->eb_numev++;
-    LIST_INSERT_HEAD(&base->eb_evtbl[hash], ev, entry);
     ev->state |= EVS_PENDING;
-    
-    /* set changed flag */
+
+    /* XXX: hack to make event inactive after its changed. Memcached requires this
+     * IT requires that when an event is active and changed, no more IO is done on the file descriptor
+     */
     if ((ev->state & EVS_ACTIVE) != 0) {
-        ev->state |= EVS_CHANGED;
-#ifdef DEBUG
-        fprintf(stderr, "event_add EVS_CHANGED for fd %d\n", ev->fd);
-#endif
+        ev->state &= ~EVS_ACTIVE;
+        ev->owner = NULL;
+        ev->epoch++;
     }
+
     evb_unlock(base);
     result = CS_OK;
 
-    end:
+end:
 #ifdef DEBUG
-    fprintf(stderr, "event_add status %d for fd %d\n", result, ev->fd);
+    fprintf(stderr, "t %p event_add status %d for fd %d\n", (void*)pthread_self(), result, ev->fd);
 #endif
 
     return result;
@@ -470,15 +440,21 @@ event_set(struct event *ev, int fd, short type, void (*fn)(int, short, void *), 
     if (ev->cv_init != CV_INIT_MAGIC) {
         ev->cv_init = CV_INIT_MAGIC;
         ev->state = 0;
+        ev->epoch = 0;
         ev->ev_base = NULL;
         ev->owner = NULL;
     }
 
-    /* after the first "if" to guarantee ev_state is inited for the first time */
+    /* this is placed after the first "if" to guarantee ev_state is inited for the first time */
     if ((ev->state & EVS_ACTIVE) != 0) {
-        /* Can't change these while active or undefined behavior */
-        assert(fd == ev->fd);
-        assert(type == ev->type);
+        if (((ev->state) & EVS_PENDING) != 0) {
+            /* cannot change type while the event is queued */
+            assert(type == ev->type);
+        }
+        if ((ev->type & EV_TIMEOUT) == 0) {
+            /* Timeout fd doesn't matter */
+            assert(fd == ev->fd);
+        }
     }
 
     ev->fd = fd;

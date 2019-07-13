@@ -19,8 +19,7 @@ struct event_base {
     pthread_cond_t stop_cv;
     // hashtable of events
     int eb_numev;
-    struct evlist *eb_evtbl;
-
+    
     // the kqfd for this base
     int eb_kqfd;
 
@@ -51,6 +50,7 @@ struct event {
     LIST_ENTRY(event) entry;
 
     int state;
+    int epoch; /* incremeneted whenever an active event is added/deleted  */
 };
 
 int 
@@ -60,11 +60,9 @@ void
 event_base_free(struct event_base *base);
 
 #define EVLOOP_ONCE 0x1
-int 
-event_base_loop(struct event_base *base, int flags);
 
 int 
-event_base_loop_ex(struct event_base *, void *args, int flags);
+event_base_loop(struct event_base *base, int flags);
 
 struct event_base*
 event_init_flags(struct event_init_config* confg);
