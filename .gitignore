@@ -3,6 +3,7 @@
 *\.core
 .depend
 .swp
+wrk2
 kqmanager
 kqmanager.debug
 kqmanager.full
