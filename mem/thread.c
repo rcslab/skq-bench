@@ -180,7 +180,7 @@ void pause_threads(enum pause_thread_types type) {
     pthread_mutex_lock(&init_lock);
     init_count = 0;
     for (i = 0; i < settings.num_threads; i++) {
-        if (write(threads[i].notify_send_fd, buf, 1) != 1) {
+        if (write(g_pipes[i].notify_send_fd, buf, 1) != 1) {
             perror("Failed writing to notify pipe");
             /* TODO: This is a fatal problem. Can it ever happen temporarily? */
         }
@@ -312,42 +312,33 @@ void accept_new_conns(const bool do_accept) {
 }
 /****************************** LIBEVENT THREADS *****************************/
 
+#define KQ_SCHED_FLAGS (0)
+struct event_base *g_evb = NULL; /* global event_base */
+struct thrd_notif_pipe *g_pipes; /* global book keeping for all notification pipes */
+_Thread_local LIBEVENT_THREAD* g_current_thread; /* thread local data holding the current LIBEVENT_THREAD structure */
+
+static void setup_global_evb()
+{
+    if (g_evb) {
+        fprintf(stderr, "Global ev base already allocated\n");
+        exit(1);
+    }
+
+    struct event_init_config cfg;
+    cfg.data = KQ_SCHED_FLAGS;
+    cfg.eb_flags = EVB_MULTI;
+    g_evb = event_init_flags(&cfg);
+    
+    if (!g_evb) {
+        fprintf(stderr, "Can't allocate global event base\n");
+        exit(1);
+    }
+}
+
 /*
  * Set up a thread's information.
  */
 static void setup_thread(LIBEVENT_THREAD *me) {
-#if defined(LIBEVENT_VERSION_NUMBER) && LIBEVENT_VERSION_NUMBER >= 0x02000101
-    struct event_config *ev_config;
-    ev_config = event_config_new();
-    event_config_set_flag(ev_config, EVENT_BASE_FLAG_NOLOCK);
-    me->base = event_base_new_with_config(ev_config);
-    event_config_free(ev_config);
-#else
-    me->base = event_init();
-#endif
-
-    if (! me->base) {
-        fprintf(stderr, "Can't allocate event base\n");
-        exit(1);
-    }
-
-    /* Listen for notifications from other threads */
-    event_set(&me->notify_event, me->notify_receive_fd,
-              EV_READ | EV_PERSIST, thread_libevent_process, me);
-    event_base_set(me->base, &me->notify_event);
-
-    if (event_add(&me->notify_event, 0) == -1) {
-        fprintf(stderr, "Can't monitor libevent notify pipe\n");
-        exit(1);
-    }
-
-    me->new_conn_queue = malloc(sizeof(struct conn_queue));
-    if (me->new_conn_queue == NULL) {
-        perror("Failed to allocate memory for connection queue");
-        exit(EXIT_FAILURE);
-    }
-    cq_init(me->new_conn_queue);
-
     if (pthread_mutex_init(&me->stats.mutex, NULL) != 0) {
         perror("Failed to initialize mutex");
         exit(EXIT_FAILURE);
@@ -383,6 +374,9 @@ static void setup_thread(LIBEVENT_THREAD *me) {
 static void *worker_libevent(void *arg) {
     LIBEVENT_THREAD *me = arg;
 
+    /* thread local variable */
+    set_current_thread(me);
+
     /* Any per-thread setup can happen here; memcached_thread_init() will block until
      * all threads have finished initializing.
      */
@@ -398,9 +392,7 @@ static void *worker_libevent(void *arg) {
 
     register_thread_initialized();
 
-    event_base_loop(me->base, 0);
-
-    event_base_free(me->base);
+    event_base_loop(g_evb, 0);
     return NULL;
 }
 
@@ -410,7 +402,8 @@ static void *worker_libevent(void *arg) {
  * input arrives on the libevent wakeup pipe.
  */
 static void thread_libevent_process(int fd, short which, void *arg) {
-    LIBEVENT_THREAD *me = arg;
+    LIBEVENT_THREAD *me = get_current_thread();
+    struct thrd_notif_pipe* pipe = (struct thrd_notif_pipe *)arg;
     CQ_ITEM *item;
     char buf[1];
     conn *c;
@@ -424,7 +417,7 @@ static void thread_libevent_process(int fd, short which, void *arg) {
 
     switch (buf[0]) {
     case 'c':
-        item = cq_pop(me->new_conn_queue);
+        item = cq_pop(pipe->new_conn_queue);
 
         if (NULL == item) {
             break;
@@ -433,7 +426,7 @@ static void thread_libevent_process(int fd, short which, void *arg) {
             case queue_new_conn:
                 c = conn_new(item->sfd, item->init_state, item->event_flags,
                                    item->read_buffer_size, item->transport,
-                                   me->base, item->ssl);
+                                   g_evb, item->ssl);
                 if (c == NULL) {
                     if (IS_UDP(item->transport)) {
                         fprintf(stderr, "Can't listen for events on UDP socket\n");
@@ -468,6 +461,7 @@ static void thread_libevent_process(int fd, short which, void *arg) {
         break;
     /* a client socket timed out */
     case 't':
+        assert(false);
         if (read(fd, &timeout_fd, sizeof(timeout_fd)) != sizeof(timeout_fd)) {
             if (settings.verbose > 0)
                 fprintf(stderr, "Can't read timeout fd from libevent pipe\n");
@@ -499,7 +493,7 @@ void dispatch_conn_new(int sfd, enum conn_states init_state, int event_flags,
 
     int tid = (last_thread + 1) % settings.num_threads;
 
-    LIBEVENT_THREAD *thread = threads + tid;
+    struct thrd_notif_pipe *pipe = &g_pipes[tid];
 
     last_thread = tid;
 
@@ -511,11 +505,11 @@ void dispatch_conn_new(int sfd, enum conn_states init_state, int event_flags,
     item->mode = queue_new_conn;
     item->ssl = ssl;
 
-    cq_push(thread->new_conn_queue, item);
+    cq_push(pipe->new_conn_queue, item);
 
     MEMCACHED_CONN_DISPATCH(sfd, thread->thread_id);
     buf[0] = 'c';
-    if (write(thread->notify_send_fd, buf, 1) != 1) {
+    if (write(pipe->notify_send_fd, buf, 1) != 1) {
         perror("Writing to thread notify pipe");
     }
 }
@@ -533,16 +527,22 @@ void redispatch_conn(conn *c) {
         close(c->sfd);
         return;
     }
-    LIBEVENT_THREAD *thread = c->thread;
+
+    int tid = (last_thread + 1) % settings.num_threads;
+
+    struct thrd_notif_pipe *pipe = &g_pipes[tid];
+
+    last_thread = tid;
+
     item->sfd = c->sfd;
     item->init_state = conn_new_cmd;
     item->c = c;
     item->mode = queue_redispatch;
 
-    cq_push(thread->new_conn_queue, item);
+    cq_push(pipe->new_conn_queue, item);
 
     buf[0] = 'c';
-    if (write(thread->notify_send_fd, buf, 1) != 1) {
+    if (write(pipe->notify_send_fd, buf, 1) != 1) {
         perror("Writing to thread notify pipe");
     }
 }
@@ -830,6 +830,17 @@ void memcached_thread_init(int nthreads, void *arg) {
         exit(1);
     }
 
+    /* Setup a global event base */
+    setup_global_evb();
+
+    /* Same number of pipes as the number of threads */
+    g_pipes = calloc(nthreads, sizeof(struct thrd_notif_pipe));
+    if (g_pipes == NULL) {
+        perror("Can't allocate global pipe descriptors");
+        exit(1);
+    }
+
+    /* Setup pipes */
     for (i = 0; i < nthreads; i++) {
         int fds[2];
         if (pipe(fds)) {
@@ -837,8 +848,30 @@ void memcached_thread_init(int nthreads, void *arg) {
             exit(1);
         }
 
-        threads[i].notify_receive_fd = fds[0];
-        threads[i].notify_send_fd = fds[1];
+        /* init connection queue */
+        g_pipes[i].new_conn_queue = malloc(sizeof(struct conn_queue));
+        if (g_pipes[i].new_conn_queue == NULL) {
+            perror("Failed to allocate memory for connection queue");
+            exit(EXIT_FAILURE);
+        }
+        cq_init(g_pipes[i].new_conn_queue);
+        
+        /* init fds */
+        g_pipes[i].notify_receive_fd = fds[0];
+        g_pipes[i].notify_send_fd = fds[1];
+
+        /* add to global event */
+        event_set(&g_pipes[i].notify_event, g_pipes[i].notify_receive_fd,
+        EV_READ | EV_PERSIST, thread_libevent_process, &g_pipes[i]);
+        event_base_set(g_evb, &g_pipes[i].notify_event);
+        
+        if (event_add(&g_pipes[i].notify_event, 0) == -1) {
+            fprintf(stderr, "Can't monitor libevent notify pipe\n");
+            exit(1);
+        }
+    }
+
+    for (i = 0; i < nthreads; i++) {
 #ifdef EXTSTORE
         threads[i].storage = arg;
 #endif

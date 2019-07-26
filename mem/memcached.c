@@ -411,7 +411,8 @@ static void *conn_timeout_thread(void *arg) {
             if ((current_time - c->last_cmd_time) > settings.idle_timeout) {
                 buf[0] = 't';
                 memcpy(&buf[1], &i, sizeof(int));
-                if (write(c->thread->notify_send_fd, buf, TIMEOUT_MSG_SIZE)
+                /* CCC: This is not handled yet, write to the first socket and call it good */
+                if (write(g_pipes[0].notify_send_fd, buf, TIMEOUT_MSG_SIZE)
                     != TIMEOUT_MSG_SIZE)
                     perror("Failed to write timeout to notify pipe");
             } else {
@@ -526,7 +527,7 @@ void conn_close_idle(conn *c) {
 void conn_worker_readd(conn *c) {
     c->ev_flags = EV_READ | EV_PERSIST;
     event_set(&c->event, c->sfd, c->ev_flags, event_handler, (void *)c);
-    event_base_set(c->thread->base, &c->event);
+    event_base_set(g_evb, &c->event);
     c->state = conn_new_cmd;
 
     // TODO: call conn_cleanup/fail/etc
@@ -5631,6 +5632,14 @@ static void drive_machine(conn *c) {
 
     assert(c != NULL);
 
+    /* only worker threads have a valid thread_local g_current_thread */
+    if (c->state != conn_listening) {
+        c->thread = get_current_thread();
+        // fprintf(stderr,"drive_machine: thread %p connection %d\n", (void*)c->thread->thread_id, c->sfd);
+    } else {
+        // fprintf(stderr,"drive_machine_main: connection %d\n", c->sfd);
+    }
+    
     while (!stop) {
 
         switch(c->state) {
