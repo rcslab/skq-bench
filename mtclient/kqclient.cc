@@ -30,7 +30,7 @@ using namespace std;
 #define RECV_BUFFER_SIZE strlen(SERVER_STRING)
 //#define PRINT_SERVER_ECHO
 
-vector<thread> threads;
+vector<std::thread> threads;
 vector<int> thread_need_resp_data;
 vector<unique_ptr<atomic<long>>> response_counter_total;
 int threads_total, test_launch_time = 0, conn_cooldown_time = DEFAULT_CONNECTION_COOLDOWN_TIME;
@@ -426,7 +426,7 @@ main(int argc, char * argv[])
 					if (i == threads_total-1) {
 						connperthread += conns_total % threads_total;
 					}
-					threads.push_back(thread(client_thread, self_ip, conn_port, i, connperthread));
+					threads.push_back(std::thread(client_thread, self_ip, conn_port, i, connperthread));
 				}
 
 				printf("Next test will begin in %d seconds.\n", test_launch_time);

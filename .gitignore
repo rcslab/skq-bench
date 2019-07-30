@@ -13,3 +13,5 @@ kqclient
 kqclient.debug
 kqclient.full
 evcompat/build
+scripts/pingpong/results.d
+scripts/pingpong/graphs.d

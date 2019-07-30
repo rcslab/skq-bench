@@ -3,10 +3,10 @@
  * c/s will accept manager connection.
  *
  */
-
 #include <stdio.h>
 #include <string.h>
 
+#include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/event.h>
 #include <netinet/in.h>
@@ -342,7 +342,7 @@ main(int argc, char* argv[])
 {
 	int ch;
 	FILE *fp, *fp_csv, *resp_fp_csv;
-	thread s_thr, c_thr;
+	std::thread s_thr, c_thr;
 	server_ctlport = DEFAULT_SERVER_CTL_PORT;
 	conn_port = DEFAULT_SERVER_CLIENT_CONN_PORT;
 	client_ctlport = DEFAULT_CLIENT_CTL_PORT;
@@ -425,6 +425,10 @@ main(int argc, char* argv[])
 
 	if (csv_output) {
 		fp_csv = fopen(output_name.c_str(), "w");
+		if (fp_csv == NULL) {
+			perror("Failed to create the output file");
+			abort();
+		}
 		fprintf(fp_csv, "KQueue Count, Threads Count(Server), Connections Count, Events Count\n");
 		fflush(fp_csv);
 	}

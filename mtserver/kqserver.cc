@@ -40,7 +40,7 @@ bool quit = false, discnt_flag = false, enable_mtkq = false;
 bool enable_delay = false;
 atomic<bool> perf_enable;
 
-vector<thread> threads;
+vector<std::thread> threads;
 vector<unique_ptr<atomic<long>>> perf_counter;
 vector<int> kqs, listen_fds, conns, server_socks;
 vector<int> core_affinity;
@@ -401,7 +401,7 @@ main(int argc, char *argv[])
 				
 				CPU_ZERO(&cpuset);
 				for (int i=0;i<threads_total;i++) {
-					threads.push_back(thread(work_thread, kq, i));
+					threads.push_back(std::thread(work_thread, kq, i));
 
 					// will replace this with the affinity policy later
 					int core_id = i % core_affinity.size();
