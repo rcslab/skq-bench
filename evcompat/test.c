@@ -1,3 +1,4 @@
+#include <sys/types.h>
 #include "event.h"
 #include "internal.h"
 #include <stdio.h>

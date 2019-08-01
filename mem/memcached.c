@@ -6903,6 +6903,7 @@ int main (int argc, char **argv) {
     bool do_daemonize = false;
     bool preallocate = false;
     int maxcore = 0;
+    int evconf_flag = 0;
     char *username = NULL;
     char *pid_file = NULL;
     struct passwd *pw;
@@ -7133,6 +7134,7 @@ int main (int argc, char **argv) {
           "X"   /* Disable dump commands */
           "Y:"   /* Enable token auth */
           "o:"  /* Extended generic options */
+          "q:" /* evconf flags */
           ;
 
     /* process arguments */
@@ -7171,6 +7173,7 @@ int main (int argc, char **argv) {
         {"disable-dumping", no_argument, 0, 'X'},
         {"auth-file", required_argument, 0, 'Y'},
         {"extended", required_argument, 0, 'o'},
+        {"event-flags", required_argument, 0, 'q'},
         {0, 0, 0, 0}
     };
     int optindex;
@@ -7272,6 +7275,9 @@ int main (int argc, char **argv) {
             break;
         case 'P':
             pid_file = optarg;
+            break;
+        case 'q':
+            evconf_flag = atoi(optarg);
             break;
         case 'f':
             settings.factor = atof(optarg);
@@ -8195,10 +8201,10 @@ int main (int argc, char **argv) {
     /* start up worker threads if MT mode */
 #ifdef EXTSTORE
     slabs_set_storage(storage);
-    memcached_thread_init(settings.num_threads, storage);
+    memcached_thread_init(settings.num_threads, storage, evconf_flag);
     init_lru_crawler(storage);
 #else
-    memcached_thread_init(settings.num_threads, NULL);
+    memcached_thread_init(settings.num_threads, NULL, evconf_flag);
     init_lru_crawler(NULL);
 #endif
 

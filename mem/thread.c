@@ -312,12 +312,11 @@ void accept_new_conns(const bool do_accept) {
 }
 /****************************** LIBEVENT THREADS *****************************/
 
-#define KQ_SCHED_FLAGS (0)
 struct event_base *g_evb = NULL; /* global event_base */
 struct thrd_notif_pipe *g_pipes; /* global book keeping for all notification pipes */
 _Thread_local LIBEVENT_THREAD* g_current_thread; /* thread local data holding the current LIBEVENT_THREAD structure */
 
-static void setup_global_evb()
+static void setup_global_evb(int evflags)
 {
     if (g_evb) {
         fprintf(stderr, "Global ev base already allocated\n");
@@ -325,7 +324,7 @@ static void setup_global_evb()
     }
 
     struct event_init_config cfg;
-    cfg.data = KQ_SCHED_FLAGS;
+    cfg.data = evflags;
     cfg.eb_flags = EVB_MULTI;
     g_evb = event_init_flags(&cfg);
     
@@ -774,7 +773,7 @@ void slab_stats_aggregate(struct thread_stats *stats, struct slab_stats *out) {
  *
  * nthreads  Number of worker event handler threads to spawn
  */
-void memcached_thread_init(int nthreads, void *arg) {
+void memcached_thread_init(int nthreads, void *arg, int evflags) {
     int         i;
     int         power;
 
@@ -831,7 +830,7 @@ void memcached_thread_init(int nthreads, void *arg) {
     }
 
     /* Setup a global event base */
-    setup_global_evb();
+    setup_global_evb(evflags);
 
     /* Same number of pipes as the number of threads */
     g_pipes = calloc(nthreads, sizeof(struct thrd_notif_pipe));

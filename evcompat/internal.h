@@ -1,6 +1,16 @@
 #ifndef EVCOMPAT_INTERNAL_H
 #define EVCOMPAT_INTERNAL_H
 
+#include <sys/types.h>
+#include <sys/event.h>
+
+#ifdef FKQMULTI
+    #define MULT_KQ (1)
+#else
+    #define FKQMULTI (0)
+    #define MULT_KQ (0) 
+#endif
+
 #define UNUSED(x) (void)(x)
 /* 
  * for event_base->state
@@ -22,9 +32,8 @@
 #define EVENT_DEL_BLOCK (0)
 #define EVENT_DEL_NOBLOCK (1)
 
-#define NEVENT (64)
-#define FKQMULTI (0)
-#define KQ_SCHED_FLAG (0x3)
+#define NEVENT (512)
 #define CV_INIT_MAGIC (0xdeedb33f)
+
 
 #endif

@@ -276,7 +276,7 @@ AC_SEARCH_LIBS(clock_gettime, rt)
 AC_SEARCH_LIBS(socket, socket)
 AC_SEARCH_LIBS(gethostbyname, nsl)
 
-libevent_loc="/home/oscar/projs/kqsched/evcompat"
+libevent_loc="../evcompat"
 LIBS="-levent $LIBS"
 LDFLAGS="-L$libevent_loc/build $LDFLAGS"
 CPPFLAGS="-I$libevent_loc"

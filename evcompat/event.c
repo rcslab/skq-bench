@@ -1,5 +1,5 @@
-#include "event.h"
-#include "internal.h"
+#include <sys/types.h>
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
@@ -11,8 +11,11 @@
 #include <errno.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
-#include <sys/types.h>
 #include <machine/atomic.h>
+
+/* these must be included after sys/event.h */
+#include "event.h"
+#include "internal.h"
 
 static void
 ev_wait(struct event_base *eb)
@@ -87,12 +90,12 @@ event_init_flags(struct event_init_config *config)
     if (config != NULL) {
         base->eb_flags = config->eb_flags;
         if ((config->eb_flags & EVB_MULTI) == EVB_MULTI) {
-#ifdef KQ_SCHED_SUPPORT
-            int ret;
-            kqflag = config->data;
-            ret = ioctl(base->eb_kqfd, FKQMULTI, &kqflag);
-            assert(ret != -1);
-#endif
+            if (MULT_KQ) {
+                int ret, kqflag;
+                kqflag = config->data;
+                ret = ioctl(base->eb_kqfd, FKQMULTI, &kqflag);
+                assert(ret != -1);
+            }
         }
     }
 
@@ -267,6 +270,7 @@ start:
 
             ev->state |= EVS_ACTIVE;
             ev->owner = pthread_self();
+
             active[active_cnt] = ev;
             epochs[active_cnt] = ev->epoch;
             active_cnt++;
@@ -297,9 +301,9 @@ start:
                  * XXX: we could batch all the events and del them in one kevent call 
                  * but requires an event_del function that handles batches 
                  */
-                 ret = event_del_flags(ev, EVENT_DEL_NOBLOCK);
+                ret = event_del_flags(ev, EVENT_DEL_NOBLOCK);
                 assert(ret == CS_OK);
-            } else {
+            } else if (!MULT_KQ) {
                 /* Add to enable list to be re-enabled later */
                 memcpy(&enlist[en_cnt], &evlist[i], sizeof(struct kevent));
                 enlist[en_cnt].flags = EV_ENABLE;
@@ -307,16 +311,16 @@ start:
             }
         } else {
             /* ignore events that have changed */
-            #ifdef DEBUG
+#ifdef DEBUG
             fprintf(stderr, "t %p event %d changed while active\n", (void*)pthread_self(), ev->fd);
-            #endif
+#endif
         }
 
         /* wakeup threads waiting on the event */
         ev_signal(base);
     }
 
-    if (en_cnt > 0) {
+    if (en_cnt > 0 && !MULT_KQ) {
 #ifdef DEBUG
         fprintf(stderr, "t %p event_base_loop re-enabling %d events. First fd: %d\n", (void*)pthread_self(), en_cnt, (int)enlist[0].ident);
 #endif
@@ -378,8 +382,10 @@ event_add(struct event *ev, const struct timeval *timeout)
         to.tv_nsec = timeout->tv_usec * 1000;
     }
 
-    /* All events are EV_DISPATCH. Persistent events will be re-enabled */
-    result = init_kevent(&kev, ev, EV_ADD | EV_DISPATCH, timeout);
+    /* In single KQ mode all events are EV_DISPATCH. Persistent events will be re-enabled 
+     * EV_DISPATCH flag is not required for multi kq
+     */
+    result = init_kevent(&kev, ev, EV_ADD | (MULT_KQ ? 0 : EV_DISPATCH), timeout);
 
     if (result != 0) {
 #ifdef DEBUG

@@ -2,12 +2,9 @@
 #define EVCOMPAT_EVENT_H
 
 #include <pthread.h>
-#include <sys/queue.h>
 #include <sys/time.h>
 
 struct event;
-
-LIST_HEAD(evlist, event);
 
 struct event_init_config {
     int eb_flags;
@@ -46,8 +43,6 @@ struct event {
     short type;
     ev_fn fn;
     void *arg;
-
-    LIST_ENTRY(event) entry;
 
     int state;
     int epoch; /* incremeneted whenever an active event is added/deleted  */

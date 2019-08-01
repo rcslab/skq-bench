@@ -1,7 +1,7 @@
 #!/usr/local/bin/bash
 # directories
 result_dir=results.d
-test_dir=kqsched_tests.d
+test_dir="/tmp/tests.d"
 server_file=mtserver/kqserver
 client_file=mtclient/kqclient
 
@@ -17,9 +17,9 @@ rm -rf $result_dir
 mkdir $result_dir
 
 pretest() {
-	ssh $server -f "~/$test_dir/$server_file >> ~/$test_dir/test.log 2>&1"
-	ssh $client1 -f "~/$test_dir/$client_file >> ~/$test_dir/test.log 2>&1"
-	ssh $client2 -f  "~/$test_dir/$client_file >> ~/$test_dir/test.log 2>&1"
+	ssh $server -f "$test_dir/$server_file >> $test_dir/test.log 2>&1"
+	ssh $client1 -f "$test_dir/$client_file >> $test_dir/test.log 2>&1"
+	ssh $client2 -f  "$test_dir/$client_file >> $test_dir/test.log 2>&1"
 	sleep 1
 }
 
