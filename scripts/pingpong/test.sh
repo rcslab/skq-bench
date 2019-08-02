@@ -1,7 +1,8 @@
 #!/usr/local/bin/bash
 # directories
-result_dir=results.d
+
 test_dir="/tmp/tests.d"
+result_dir=results.d
 server_file=mtserver/kqserver
 client_file=mtclient/kqclient
 
@@ -31,12 +32,12 @@ posttest() {
 
 params=("legacy" " " $full_case  \
         "rr" "-m 0" $test_case  \
-        "queue" "-m 1"  $test_case \
-		"cqueue" "-m 2" $test_case \
+        "queue" "-m 2"  $test_case \
+		"cqueue" "-m 6" $test_case \
 		"bon" "-m 8" $test_case \
-		"ws" "-m 4" $test_case \
-		"ws_bon" "-m 12" $test_case \
-		"ws_queue" "-m 5" $test_case )
+		"ws_queue" "-m 3" $test_case \
+		"ws_cqueue" "-m 7" $test_case \
+		"ws_bon" "-m 9" $test_case )
 
 i=0
 while [ $i -lt ${#params[@]} ]

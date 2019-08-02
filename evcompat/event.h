@@ -12,11 +12,6 @@ struct event_init_config {
 };
 
 struct event_base {
-    pthread_mutex_t lk;
-    pthread_cond_t stop_cv;
-    // hashtable of events
-    int eb_numev;
-    
     // the kqfd for this base
     int eb_kqfd;
 
@@ -28,6 +23,8 @@ struct event_base {
 typedef void (*ev_fn)(int, short, void *);
 
 struct event {
+    pthread_cond_t stop_cv;
+    pthread_mutex_t lk;
     struct event_base *ev_base;
     
     /* XXX: change the name of this var */
@@ -59,7 +56,7 @@ event_base_free(struct event_base *base);
 int 
 event_base_loop(struct event_base *base, int flags);
 
-struct event_base*
+struct event_base *
 event_init_flags(struct event_init_config* confg);
 
 int 
@@ -71,10 +68,13 @@ event_add(struct event *ev, const struct timeval *timeout);
 void 
 event_set(struct event *ev, int fd, short type, ev_fn fn, void *args);
 
+void
+event_cleanup(struct event* ev);
+
 const char*
 event_get_version(void);
 
-static inline struct event_base*
+static inline struct event_base *
 event_init()
 {
     return event_init_flags(NULL);

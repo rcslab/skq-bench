@@ -18,27 +18,27 @@
 #include "internal.h"
 
 static void
-ev_wait(struct event_base *eb)
+ev_wait(struct event *ev)
 {
-    pthread_cond_wait(&eb->stop_cv, &eb->lk);
+    pthread_cond_wait(&ev->stop_cv, &ev->lk);
 }
 
 static void
-ev_signal(struct event_base *eb)
+ev_signal(struct event *ev)
 {
-    pthread_cond_signal(&eb->stop_cv);
+    pthread_cond_signal(&ev->stop_cv);
 }
 
 static void 
-evb_lock(struct event_base *base)
+ev_lock(struct event *ev)
 {
-    pthread_mutex_lock(&base->lk);
+    pthread_mutex_lock(&ev->lk);
 }
 
 static void 
-evb_unlock(struct event_base *base)
+ev_unlock(struct event *ev)
 {
-    pthread_mutex_unlock(&base->lk);
+    pthread_mutex_unlock(&ev->lk);
 }
 
 /* XXX: hack to make unique timer ids */
@@ -79,13 +79,9 @@ event_init_flags(struct event_init_config *config)
 {
     struct event_base *base = malloc(sizeof(struct event_base));
     assert(base != NULL);
-    pthread_mutex_init(&base->lk, NULL);
-    pthread_cond_init(&base->stop_cv, NULL);
 
     base->eb_kqfd = kqueue();
     assert(base->eb_kqfd > 0);
-
-    base->eb_numev = 0;
 
     if (config != NULL) {
         base->eb_flags = config->eb_flags;
@@ -95,6 +91,7 @@ event_init_flags(struct event_init_config *config)
                 kqflag = config->data;
                 ret = ioctl(base->eb_kqfd, FKQMULTI, &kqflag);
                 assert(ret != -1);
+                fprintf(stderr, "Multi kqueue enabled: flag %d", kqflag);
             }
         }
     }
@@ -106,8 +103,6 @@ void
 event_base_free(struct event_base *base)
 {
     int ret = 0;
-    pthread_mutex_destroy(&base->lk);
-    pthread_cond_destroy(&base->stop_cv);
 
     ret = close(base->eb_kqfd);
 
@@ -133,7 +128,7 @@ event_base_set(struct event_base *base, struct event *ev)
     return CS_OK;
 }
 
-/* ev base lock must be held */
+/* ev lock must be held */
 static int
 event_del_flags(struct event *ev, int flags)
 {
@@ -160,7 +155,7 @@ retry:
             ret = CS_ERR;
             goto end;
         } else {
-            ev_wait(base);
+            ev_wait(ev);
             goto retry;
         }
     }
@@ -179,7 +174,6 @@ retry:
 
     /* remove from base */
     ev->state &= ~EVS_PENDING;
-    base->eb_numev--;
 
 
     /* XXX: hack to make event inactive after its changed. Memcached requires this
@@ -202,10 +196,9 @@ int
 event_del(struct event *ev)
 {
     int ret;
-    assert(ev->ev_base != NULL);
-    evb_lock(ev->ev_base);
+    ev_lock(ev);
     ret = event_del_flags(ev, EVENT_DEL_BLOCK);
-    evb_unlock(ev->ev_base);
+    ev_unlock(ev);
     return ret;
 }
 
@@ -228,14 +221,6 @@ start:
     fd = 0;
     active_cnt = 0;
     en_cnt = 0;
-    evb_lock(base);
-    if (base->eb_numev == 0) {
-        errno = EINVAL;
-        ret = CS_WARN;
-        evb_unlock(base);
-        goto end;
-    }
-    evb_unlock(base);
 
 #ifdef DEBUG
     fprintf(stderr, "event_base_loop t %p kevent base: %p\n", pthread_self(), base);
@@ -255,46 +240,41 @@ start:
         goto end;
     }
 
-    evb_lock(base);
     for (int i = 0; i < ret; i++) {
         fd = evlist[i].ident;
         ev = evlist[i].udata;
 
+        ev_lock(ev);
+
         /* sanity check */
         assert(ev->fd == fd);
         assert(ev->ev_base == base);
-        
-        if (ev != NULL) {
-            /* We cannot handle an event that's active, otherwise it implies a bug in our code. */
-            assert((ev->state & EVS_ACTIVE) == 0);
 
-            ev->state |= EVS_ACTIVE;
-            ev->owner = pthread_self();
+        /* We cannot handle an event that's active, otherwise it implies a bug in our code. */
+        assert((ev->state & EVS_ACTIVE) == 0);
+        ev->state |= EVS_ACTIVE;
 
-            active[active_cnt] = ev;
-            epochs[active_cnt] = ev->epoch;
-            active_cnt++;
-        } else {
-#ifdef DEBUG
-            fprintf(stderr, "event_base_loop no matching struct event for fd %d\n", fd);
-#endif
-        }
+        ev->owner = pthread_self();
+
+        active[active_cnt] = ev;
+        epochs[active_cnt] = ev->epoch;
+        active_cnt++;
+
+        ev_unlock(ev);
     }
-    evb_unlock(base);
 
     for (int i = 0; i < active_cnt; i++) {
         ev = active[i];
         ev->fn(ev->fd, 0, ev->arg);
     }
 
-    evb_lock(base);
     for (int i = 0; i < active_cnt; i++) {
         ev = active[i];
 
+        ev_lock(ev);
         if (ev->epoch == epochs[i]) {
-            /* if the event didn't change */
-            ev->owner = NULL;
             ev->state &= ~EVS_ACTIVE;
+            ev->owner = NULL;
 
             if ((ev->type & EV_PERSIST) == 0) {
                 /* 
@@ -303,11 +283,14 @@ start:
                  */
                 ret = event_del_flags(ev, EVENT_DEL_NOBLOCK);
                 assert(ret == CS_OK);
-            } else if (!MULT_KQ) {
-                /* Add to enable list to be re-enabled later */
-                memcpy(&enlist[en_cnt], &evlist[i], sizeof(struct kevent));
-                enlist[en_cnt].flags = EV_ENABLE;
-                en_cnt++;            
+            } else {
+                if (!MULT_KQ) {
+                    /* Add to enable list to be re-enabled later
+                     */
+                    memcpy(&enlist[en_cnt], &evlist[i], sizeof(struct kevent));
+                    enlist[en_cnt].flags = EV_ENABLE;
+                    en_cnt++;     
+                }
             }
         } else {
             /* ignore events that have changed */
@@ -316,8 +299,8 @@ start:
 #endif
         }
 
-        /* wakeup threads waiting on the event */
-        ev_signal(base);
+        /* signal event completion */
+        ev_signal(ev);
     }
 
     if (en_cnt > 0 && !MULT_KQ) {
@@ -326,13 +309,19 @@ start:
 #endif
         ret = kevent(base->eb_kqfd, enlist, en_cnt, NULL, 0, NULL);
         /* re-enable events, since events are active, this CANNOT fail */
+#ifdef DEBUG
         if (ret != 0) {
             fprintf(stderr, "t %p re-enabling events failed: ret %d, errno %d\n", pthread_self(), ret, errno);
         }
+#endif
         assert(ret == 0);
     }
-
-    evb_unlock(base);
+    
+    /* unlock all events */
+    for(int i = 0; i < active_cnt; i++) {
+        ev = active[i];
+        ev_unlock(ev);
+    }
 
     if ((flags & EVLOOP_ONCE) == 0)
         goto start;
@@ -396,7 +385,7 @@ event_add(struct event *ev, const struct timeval *timeout)
         goto end;
     }
 
-    evb_lock(base);
+    ev_lock(ev);
 
     result = kevent(ev->ev_base->eb_kqfd, &kev, 1, NULL, 0, timeout == NULL ? NULL : &to);
 
@@ -404,16 +393,15 @@ event_add(struct event *ev, const struct timeval *timeout)
 #ifdef DEBUG
         fprintf(stderr, "event_add kevent failed for fd %d\n", ev->fd);
 #endif
-        evb_unlock(base);
+        ev_unlock(ev);
         result = CS_ERR;
         goto end;
     }
 
-    base->eb_numev++;
     ev->state |= EVS_PENDING;
 
-    /* XXX: hack to make event inactive after its changed. Memcached requires this
-     * IT requires that when an event is active and changed, no more IO is done on the file descriptor
+    /* XXX: hack to make event inactive after its changed. Memcached requires that 
+     * when an event is active and changed, no more IO is done on the file descriptor
      */
     if ((ev->state & EVS_ACTIVE) != 0) {
         ev->state &= ~EVS_ACTIVE;
@@ -421,7 +409,7 @@ event_add(struct event *ev, const struct timeval *timeout)
         ev->epoch++;
     }
 
-    evb_unlock(base);
+    ev_unlock(ev);
     result = CS_OK;
 
 end:
@@ -430,6 +418,13 @@ end:
 #endif
 
     return result;
+}
+
+void
+event_cleanup(struct event* ev)
+{
+    pthread_mutex_destroy(&ev->lk);
+    pthread_cond_destroy(&ev->stop_cv);
 }
 
 void 
@@ -449,8 +444,11 @@ event_set(struct event *ev, int fd, short type, void (*fn)(int, short, void *), 
         ev->epoch = 0;
         ev->ev_base = NULL;
         ev->owner = NULL;
+        pthread_cond_init(&ev->stop_cv, NULL);
+        pthread_mutex_init(&ev->lk, NULL);
     }
 
+    ev_lock(ev);
     /* this is placed after the first "if" to guarantee ev_state is inited for the first time */
     if ((ev->state & EVS_ACTIVE) != 0) {
         if (((ev->state) & EVS_PENDING) != 0) {
@@ -467,6 +465,7 @@ event_set(struct event *ev, int fd, short type, void (*fn)(int, short, void *), 
     ev->type = type;
     ev->fn = fn;
     ev->arg = arg;
+    ev_unlock(ev);
 }
 
 const char *

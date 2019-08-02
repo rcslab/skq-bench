@@ -919,6 +919,7 @@ static void conn_close(conn *c) {
     pthread_mutex_lock(&conn_lock);
     allow_new_conns = true;
     pthread_mutex_unlock(&conn_lock);
+    event_cleanup(&c->event);
 
     STATS_LOCK();
     stats_state.curr_conns--;
@@ -8342,6 +8343,7 @@ int main (int argc, char **argv) {
 
     /* cleanup base */
     event_base_free(main_base);
+    /* I'm lazy and don't want to free the global pipes. Let the OS do it.*/
 
     return retval;
 }

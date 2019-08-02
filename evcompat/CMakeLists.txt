@@ -5,8 +5,8 @@ project(evcompat)
 find_program(cc "clang")
 set(CMAKE_C_COMPILER ${cc})
 
-set(CFLAGS_DBG -g -Wall -Wextra -Werror -Og -std=c11 -DDEBUG)
-set(CFLAGS -g -Wall -Wextra -Werror -O2 -std=c11 -DNDEBUG)
+set(CFLAGS_DBG -g -Wall -Wextra -Werror -Og -march=native -std=c11 -DDEBUG)
+set(CFLAGS -g -Wall -Wextra -Werror -O2 -march=native -std=c11 -DNDEBUG)
 
 # Release build
 add_library(event STATIC event.c)

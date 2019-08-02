@@ -24,7 +24,6 @@
  */
 #define CS_OK (0)
 #define CS_ERR (-1)
-#define CS_WARN (1)
 
 /* 
  * event_del flags
@@ -32,7 +31,7 @@
 #define EVENT_DEL_BLOCK (0)
 #define EVENT_DEL_NOBLOCK (1)
 
-#define NEVENT (512)
+#define NEVENT (128)
 #define CV_INIT_MAGIC (0xdeedb33f)
 
 
