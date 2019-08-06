@@ -15,6 +15,29 @@ using namespace std;
 vector<float> percentiles = {50, 90, 99, 99.999};
 
 void
+usage()
+{
+	printf("Httpd testbench\n\n");
+	printf("-T       %%d: httpd threads\n");
+	printf("-S     addr: httpd address\n");
+	printf("-P       %%d: httpd port\n");
+	printf("-D     path: httpd document root\n");
+	printf("-F affinity: httpd cpu affinity refer CPUSET set affinity option(CPUSET arg -l)\n");
+	printf("-H     path: httpd binary path\n");
+	printf("-M         : run httpd manually (by yourself)\n");
+	printf("-f affinity: wrk cpu affinity refer CPUSET set affinity option(CPUSET arg -l)\n");
+	printf("-r       %%d: httpd throughput rate\n");
+	printf("-t       %%d: wrk threads\n");
+	printf("-d       %%d: wrk run duration\n");
+	printf("-c       %%d: wrk connections (total)\n");
+	printf("-p     path: wrk access path (e.g. http://localhost:19999/index.html)\n");
+	printf("-s   script: wrk script\n");
+	printf("-o   output: csv output file\n");
+	printf("-v         : verbose mode\n");
+	printf("-h         : show this help\n");
+}
+
+void
 parse_dump_stats(string stats_str, FILE* fp, bool verbose)
 {
 	int stage = 0;
@@ -149,6 +172,7 @@ main(int argc, char * argv[])
 			case 'h':
 			case '?':
 			default:
+				usage();
 				exit(0);
 				break;
 		}
