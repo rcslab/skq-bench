@@ -31,7 +31,7 @@ latency50_mean = df['Latency-50P']
 latency50_mean = latency50_mean.astype(np.float)
 #latency50_mean = latency50_mean[0:50]
 
-throughput_mean = df['Requests-Mean']
+throughput_mean = df['Avg-Requests']
 throughput_mean = throughput_mean.astype(np.float)
 #throughput_mean = throughput_mean[0:50]
 

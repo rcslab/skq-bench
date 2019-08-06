@@ -1,5 +1,6 @@
 *\.o
 *\.csv
+!CSV/*
 *\.core
 .depend
 .swp
