@@ -31,7 +31,7 @@
 #define EVENT_DEL_BLOCK (0)
 #define EVENT_DEL_NOBLOCK (1)
 
-#define NEVENT (128)
+#define NEVENT (1024)
 #define CV_INIT_MAGIC (0xdeedb33f)
 
 

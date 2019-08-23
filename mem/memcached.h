@@ -427,6 +427,8 @@ struct settings {
     unsigned int logger_buf_size; /* size of per-thread logger buffer */
     bool drop_privileges;   /* Whether or not to drop unnecessary process privileges */
     bool relaxed_privileges;   /* Relax process restrictions when running testapp */
+    int evconf_flags;
+    bool set_affinity;
 #ifdef EXTSTORE
     unsigned int ext_item_size; /* minimum size of items to store externally */
     unsigned int ext_item_age; /* max age of tail item before storing ext. */
@@ -791,7 +793,7 @@ extern int daemonize(int nochdir, int noclose);
  * in the current thread) are called via "dispatch_" frontends, which are
  * also #define-d to directly call the underlying code in singlethreaded mode.
  */
-void memcached_thread_init(int nthreads, void *arg, int evflags);
+void memcached_thread_init(int nthreads, void *arg);
 void redispatch_conn(conn *c);
 void dispatch_conn_new(int sfd, enum conn_states init_state, int event_flags, int read_buffer_size,
     enum network_transport transport, void *ssl);

@@ -17,3 +17,4 @@ kqclient.full
 evcompat/build
 scripts/pingpong/results.d
 scripts/pingpong/graphs.d
+scripts/mem/results.d

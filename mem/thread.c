@@ -13,6 +13,13 @@
 #include <string.h>
 #include <pthread.h>
 
+#include <sys/ioctl.h>
+#include <semaphore.h>
+#include <pthread.h>
+#include <sys/types.h>
+#include <sys/sysctl.h>
+#include <pthread_np.h>
+
 #ifdef __sun
 #include <atomic.h>
 #endif
@@ -285,6 +292,52 @@ static void cqi_free(CQ_ITEM *item) {
     pthread_mutex_unlock(&cqi_freelist_lock);
 }
 
+static int
+get_ncpu()
+{
+    int mib[4];
+    int numcpu;
+    size_t len = sizeof(numcpu);
+
+    mib[0] = CTL_HW;
+    mib[1] = HW_NCPU;
+
+    sysctl(mib, 2, &numcpu, &len, NULL, 0);
+
+    if (numcpu < 1)
+    {
+        fprintf(stderr, "< 1 cpu detected");
+        exit(1);
+    }
+
+    return numcpu;
+}
+
+static int ncpu = 0;
+static int cur = 0;
+
+/* pin to non-hyperthreads then to hyperthreads*/
+static inline int get_next_cpu()
+{
+    int ret;
+
+    if (ncpu == 0) {
+        ncpu = get_ncpu();
+    }
+
+    if (ncpu == 1) {
+        return 0;
+    }
+    
+    if(cur >= ncpu) {
+        cur = cur % ncpu;
+    }
+    
+    ret = cur;
+    cur = cur + 2;
+
+    return ret;
+}
 
 /*
  * Creates a worker thread.
@@ -299,6 +352,22 @@ static void create_worker(void *(*func)(void *), void *arg) {
         fprintf(stderr, "Can't create thread: %s\n",
                 strerror(ret));
         exit(1);
+    }
+
+    if (settings.set_affinity) {
+        int tgt;
+        tgt = get_next_cpu();
+        fprintf(stdout, "Setting thread %p's affinity to CPU %d %d\n", (void*)((LIBEVENT_THREAD*)arg)->thread_id, tgt, tgt + 1);
+
+        cpuset_t cpuset;
+        CPU_ZERO(&cpuset);
+        CPU_SET(tgt, &cpuset);
+        CPU_SET(tgt + 1, &cpuset);
+
+        if (pthread_setaffinity_np(((LIBEVENT_THREAD*)arg)->thread_id, sizeof(cpuset_t), &cpuset) < 0) {
+            fprintf(stderr, "Failed to set thread affinity\n");
+            exit(1);
+        }
     }
 }
 
@@ -773,7 +842,7 @@ void slab_stats_aggregate(struct thread_stats *stats, struct slab_stats *out) {
  *
  * nthreads  Number of worker event handler threads to spawn
  */
-void memcached_thread_init(int nthreads, void *arg, int evflags) {
+void memcached_thread_init(int nthreads, void *arg) {
     int         i;
     int         power;
 
@@ -830,7 +899,7 @@ void memcached_thread_init(int nthreads, void *arg, int evflags) {
     }
 
     /* Setup a global event base */
-    setup_global_evb(evflags);
+    setup_global_evb(settings.evconf_flags);
 
     /* Same number of pipes as the number of threads */
     g_pipes = calloc(nthreads, sizeof(struct thrd_notif_pipe));

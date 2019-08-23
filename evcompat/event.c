@@ -91,7 +91,7 @@ event_init_flags(struct event_init_config *config)
                 kqflag = config->data;
                 ret = ioctl(base->eb_kqfd, FKQMULTI, &kqflag);
                 assert(ret != -1);
-                fprintf(stderr, "Multi kqueue enabled: flag %d", kqflag);
+                fprintf(stderr, "Multi kqueue enabled: flag %d\n", kqflag);
             }
         }
     }
