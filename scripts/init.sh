@@ -27,7 +27,7 @@ while [ $i -lt ${#servers[@]} ]
 do
 	server=${servers[$i]}
 	i=$(expr $i + 1)
-    init "$server"
+    init "$server" &
 done
 
 wait

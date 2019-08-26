@@ -1,17 +1,20 @@
+#!/usr/bin/env python3.6
+
 import subprocess as sp
 import time
 import select
 import os, datetime
 import sys
 import getopt
+import memparse
 
 # paths
 test_dir = "/tmp/tests.d"
 file_dir = os.path.dirname(os.path.realpath(__file__))
 root_dir = file_dir + "/../../"
 
-load = [100, 110, 125, 150]
-sched = [6]
+load = [10, 25, 50, 60, 70, 80, 90, 100, 125, 150]
+sched = [-1, 2, 4]
 
 server = ["skylake1"]
 clients = ["skylake2", "skylake3", "skylake4", "skylake5", "skylake6", "skylake7", "skylake8"]
@@ -20,8 +23,6 @@ threads = 12
 warmup = 5
 duration = 10
 conn_per_thread = 16
-
-vanilla = False
 hostfile = None
 
 
@@ -115,8 +116,8 @@ def run_exp(sc, ld):
 
 		# start server
 		print("Starting server...")
-		server_cmd = get_cpu_str(threads) + " " + ( test_dir + "/memcached/memcached" if vanilla else test_dir + "/mem/memcached") + \
-					" -m 1024 -c 65536 -b 4096 -t " + str(threads) + ("" if vanilla else " -q " + str(sc))
+		server_cmd = (get_cpu_str(threads) + " " + test_dir + "/memcached/memcached" if sc == -1 else test_dir + "/mem/memcached") + \
+					" -m 1024 -c 65536 -b 4096 -t " + str(threads) + ("" if sc == -1 else " -e -q " + str(sc))
 		print(server_cmd)
 		remote_action(server, server_cmd, blocking=False)
 
@@ -152,50 +153,46 @@ def run_exp(sc, ld):
 
 def main():
 	global hostfile
-	global vanilla
 	global server
 	global clients
 
-	options = getopt.getopt(sys.argv[1:], 'h:v')[0]
+	options = getopt.getopt(sys.argv[1:], 'h:s')[0]
 
 	for opt, arg in options:
 		if opt in ('-h'):
 			hostfile = arg
-		elif opt in ('-v'):
-			vanilla = True
+		elif opt in ('-s'):
+			stop_all()
+			return
 
-	print("Configuration:\n" + "Vanilla: " + str(vanilla) + "\n" + "Hostfile: " + ("None" if hostfile == None else hostfile) + "\n")
+	print("Configuration:\n" + "Hostfile: " + ("None" if hostfile == None else hostfile) + "\n")
 
 	if hostfile != None:
 		hosts = parse_host_file(hostfile)
 		server = process_hostnames(server, hosts)
 		clients = process_hostnames(clients, hosts)
 
-	dirname = str(len(clients)) + "*" + str(threads) + "*" + str(conn_per_thread) + "_" + datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-	sp.call(["mkdir -p results.d/" + dirname], shell=True)
+	dirname = "results.d/" + str(len(clients)) + "*" + str(threads) + "*" + str(conn_per_thread) + "_" + datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+	sp.call(["mkdir -p " + dirname], shell=True)
 
 	print("")
 
 	for esched in sched:
-		if vanilla:
-			esched = -1
+		eachdir = dirname + "/s" + str(esched)
+		sp.call(["mkdir -p " + eachdir], shell=True)
+
 		print("============ Sched " + str(esched) + " Load: MAX ============")
 		print("- Determining the maximum load...")
 		output = run_exp(esched, 0)
 		print(output)
-
-		f = open("results.d/" + dirname + "/s" + str(esched) + "_lmax.txt", "w")
+		
+		f = open(eachdir + "/lmax.txt", "w")
 		f.write(output)
 		f.close()
 		print("")
 		
-		max_load = None
-		for line in output.splitlines():
-			if line.find("Total QPS") != -1:
-				spl = line.split(" ")
-				if len(spl) == 7:
-					max_load = int(float(spl[3]))
-					break
+		mdat = memparse.parse(output)
+		max_load = int(mdat.qps)
 		
 		if max_load != None:
 			print("Max load: " + str(max_load))
@@ -209,13 +206,10 @@ def main():
 			output = run_exp(esched, real_load)
 
 			print(output)
-			f = open("results.d/" + dirname + "/s" + str(esched) + "_l" + str(eload) + ".txt", "w")
+			f = open(eachdir + "/l" + str(eload) + ".txt", "w")
 			f.write(output)
 			f.close()
 			print("")
-
-		if vanilla:
-			break
 
 	stop_all()
 
