@@ -429,6 +429,7 @@ struct settings {
     bool relaxed_privileges;   /* Relax process restrictions when running testapp */
     int evconf_flags;
     bool set_affinity;
+    int kqdump_interval;
 #ifdef EXTSTORE
     unsigned int ext_item_size; /* minimum size of items to store externally */
     unsigned int ext_item_age; /* max age of tail item before storing ext. */

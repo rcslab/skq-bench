@@ -345,29 +345,31 @@ static inline int get_next_cpu()
 static void create_worker(void *(*func)(void *), void *arg) {
     pthread_attr_t  attr;
     int             ret;
+    cpuset_t cpuset;
 
     pthread_attr_init(&attr);
+
+    if (settings.set_affinity) {
+        int tgt;
+        tgt = get_next_cpu();
+        fprintf(stdout, "Setting worker thread's affinity to CPU %d %d\n", tgt, tgt + 1);
+
+        CPU_ZERO(&cpuset);
+        CPU_SET(tgt, &cpuset);
+        CPU_SET(tgt + 1, &cpuset);
+
+        ret = pthread_attr_setaffinity_np(&attr, sizeof(cpuset), &cpuset);
+
+        if (ret != 0) {
+            fprintf(stderr, "Can't set affinity: %s\n", strerror(ret));
+            exit(1);
+        }
+    }
 
     if ((ret = pthread_create(&((LIBEVENT_THREAD*)arg)->thread_id, &attr, func, arg)) != 0) {
         fprintf(stderr, "Can't create thread: %s\n",
                 strerror(ret));
         exit(1);
-    }
-
-    if (settings.set_affinity) {
-        int tgt;
-        tgt = get_next_cpu();
-        fprintf(stdout, "Setting thread %p's affinity to CPU %d %d\n", (void*)((LIBEVENT_THREAD*)arg)->thread_id, tgt, tgt + 1);
-
-        cpuset_t cpuset;
-        CPU_ZERO(&cpuset);
-        CPU_SET(tgt, &cpuset);
-        CPU_SET(tgt + 1, &cpuset);
-
-        if (pthread_setaffinity_np(((LIBEVENT_THREAD*)arg)->thread_id, sizeof(cpuset_t), &cpuset) < 0) {
-            fprintf(stderr, "Failed to set thread affinity\n");
-            exit(1);
-        }
     }
 }
 

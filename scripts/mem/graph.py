@@ -72,9 +72,10 @@ def main():
             eax.plot('qps', 'lat', data = df, label=sched, marker='o')
         
         eax.set_title(col)
-        eax.legend()
         idx = idx + 1
     fig.set_size_inches(11.69, 8.27)
+    plt.legend()
     plt.savefig(datdir + "/graph.png", dpi=600)
+    plt.show()
 
 main()

@@ -9,6 +9,7 @@
 #else
     #define FKQMULTI (0)
     #define MULT_KQ (0) 
+    #define FKQMPRNT (0)
 #endif
 
 #define UNUSED(x) (void)(x)

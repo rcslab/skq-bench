@@ -59,6 +59,9 @@ event_base_loop(struct event_base *base, int flags);
 struct event_base *
 event_init_flags(struct event_init_config* confg);
 
+void
+event_kq_dump(struct event_base *base);
+
 int 
 event_del(struct event *ev);
 

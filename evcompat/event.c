@@ -29,6 +29,21 @@ ev_signal(struct event *ev)
     pthread_cond_signal(&ev->stop_cv);
 }
 
+void 
+event_kq_dump(struct event_base *base)
+{
+    if ((base->eb_flags & EVB_MULTI) == EVB_MULTI) {
+        if (MULT_KQ) {
+            int ret;
+            ret = ioctl(base->eb_kqfd, FKQMPRNT);
+            if (ret == -1) {
+                fprintf(stderr, "print ioctl failed.");
+                abort();
+            }
+        }
+    }
+}
+
 static void 
 ev_lock(struct event *ev)
 {
@@ -90,8 +105,11 @@ event_init_flags(struct event_init_config *config)
                 int ret, kqflag;
                 kqflag = config->data;
                 ret = ioctl(base->eb_kqfd, FKQMULTI, &kqflag);
-                assert(ret != -1);
-                fprintf(stderr, "Multi kqueue enabled: flag %d\n", kqflag);
+                if (ret == -1) {
+                    fprintf(stderr, "multikq ioctl failed.");
+                    abort();
+                }
+                fprintf(stdout, "Multi kqueue enabled: flag %d\n", kqflag);
             }
         }
     }

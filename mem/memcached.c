@@ -318,6 +318,7 @@ static void settings_init(void) {
     settings.drop_privileges = false;
     settings.evconf_flags = 0;
     settings.set_affinity = false;
+    settings.kqdump_interval = -1;
 #ifdef MEMCACHED_DEBUG
     settings.relaxed_privileges = false;
 #endif
@@ -6443,7 +6444,6 @@ static int server_socket_unix(const char *path, int access_mask) {
  */
 volatile rel_time_t current_time;
 static struct event clockevent;
-
 /* libevent uses a monotonic clock when available for event scheduling. Aside
  * from jitter, simply ticking our internal timer here is accurate enough.
  * Note that users who are setting explicit dates for expiration times *must*
@@ -6486,6 +6486,11 @@ static void clock_handler(const int fd, const short which, void *arg) {
     evtimer_set(&clockevent, clock_handler, 0);
     event_base_set(main_base, &clockevent);
     evtimer_add(&clockevent, &t);
+
+    if (settings.kqdump_interval > 0 && current_time % settings.kqdump_interval == 0) {
+        fprintf(stdout, "Dumping KQ...\n");
+        event_kq_dump(g_evb);
+    }
 
 #if defined(HAVE_CLOCK_GETTIME) && defined(CLOCK_MONOTONIC)
     if (monotonic) {
