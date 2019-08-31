@@ -16,30 +16,35 @@ root_dir = file_dir + "/../../"
 def make_sched_flag(sched, args):
 	return (sched & 0xFF) | (args & 0xFF) << 8
 
+SCHED_VANILLA=-1
+SCHED_ARACHNE=-2
+SCHED_VANILLA_LINOX=-3
+
 sched = [
 	"vanilla", -1,
-	"queue0", make_sched_flag(1, 0),
-	"queue1", make_sched_flag(1, 1),
-	"queue2", make_sched_flag(1, 2),
-	"cpu0", make_sched_flag(2, 0),
-	"cpu1", make_sched_flag(2, 1),
-	"cpu2", make_sched_flag(2, 2),
-	"best2", make_sched_flag(4, 2),
-	"rand", make_sched_flag(0, 0),
+    "queue0", make_sched_flag(1, 0),
+    "queue1", make_sched_flag(1, 1),
+    "queue2", make_sched_flag(1, 2),
+    "cpu0", make_sched_flag(2, 0),
+    "cpu1", make_sched_flag(2, 1),
+    "cpu2", make_sched_flag(2, 2),
+    "best2", make_sched_flag(4, 2),
+    #"rand", make_sched_flag(0, 0),
+	#"arachne", SCHED_ARACHNE,
+	#"linox", SCHED_VANILLA_LINOX
 ]
 
-load = [50, 80, 100]
-#10, 30, 50, 60, 70, 80, 90, 100, 125, 150
+load = [10, 30, 50, 70, 80, 90, 120, 150, 200, 250]
 
 master = ["localhost"]
 server = ["skylake1"]
 clients = ["skylake2", "skylake3", "skylake4", "skylake5", "skylake6", "skylake7", "skylake8"]
 
 threads = 12
-client_threads = 48
+client_threads = 12
 warmup = 5
 duration = 10
-conn_per_thread = 8
+conn_per_thread = 12
 hostfile = None
 
 def get_username():
@@ -53,7 +58,7 @@ def remote_action(srv, cmd, blocking=True):
 	sub = []
 	# start clients
 	for client in srv:
-		p = sp.Popen(["ssh " + client + " " + cmd], shell=True, stdout=sp.PIPE, stderr=sp.PIPE)
+		p = sp.Popen(["ssh " + client + " \"" + cmd +"\""], shell=True, stdout=sp.PIPE, stderr=sp.PIPE)
 		sub.append(p)
 	
 	if blocking:
@@ -133,17 +138,23 @@ def run_exp(sc, ld, lstat):
 		# start server
 		print("Starting server...")
 		server_cmd = None
-		if sc == -1:
+		if sc == SCHED_VANILLA:
 			server_cmd = get_cpu_str(threads) + " " + test_dir + "/memcached/memcached -m 1024 -c 65536 -b 4096 -t " + str(threads)
+		elif sc == SCHED_VANILLA_LINOX:
+			server_cmd = "limit core 0; export EVENT_NOEPOLL=1; " + get_cpu_str(threads) + " " + \
+											test_dir + "/memcached_linox/memcached -m 1024 -c 65536 -b 4096 -t " + str(threads)
+		elif sc == SCHED_ARACHNE:
+			server_cmd = "limit core 0; " + get_cpu_str(threads) + " " + test_dir + "/memcached-A/memcached -m 1024 -c 65536 -b 4096 -t 1 " + \
+																 "--minNumCores 2 --maxNumCores " + str(threads - 1)
 		else:
 			server_cmd = test_dir + "/mem/memcached -e -m 1024 -c 65536 -b 4096 -t " + str(threads) + " -q " + str(sc)
-		
+
 		if lstat:
 			server_cmd = "sudo lockstat -A -P -s4 -n16777216 " + server_cmd + " -u " + get_username()
 
 		print(server_cmd)
 		ssrv = remote_action(server, server_cmd, blocking=False)
-
+ 
 		# start clients
 		print("Starting clients...")
 		client_cmd = get_cpu_str(client_threads) + " " + test_dir + "/mutilate/mutilate -A -T " + str(client_threads)
@@ -168,10 +179,12 @@ def run_exp(sc, ld, lstat):
 		while True:
 			# either failed or timeout
 			# we use failure detection to save time for long durations
-			if not scan_stderr(ssrv, "warning" if lstat else None) \
+			#or not scan_stderr(ssrv, "DEBUG" if lstat else None) \
+			if False \
 				or not scan_stderr(sp, "mutex.hpp") \
 				or not scan_stderr(sclt) \
-				or cur >= int(warmup + duration) * 2 :
+				or cur >= int(warmup + duration) * 2 \
+					:
 				break
 
 			if p.poll() != None:
@@ -215,8 +228,8 @@ def main():
 		server = process_hostnames(server, hosts)
 		clients = process_hostnames(clients, hosts)
 
-	dirname = "results.d/" + str(len(clients)) + "x" + str(threads) + "x" + str(conn_per_thread) + "_" + \
-							datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S') + \
+	dirname = "results.d/" + datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S') + \
+							"_" + str(threads) + "+" + str(len(clients)) + "x" + str(client_threads) + "x" + str(conn_per_thread) + \
 							("_lstat" if lockstat else "")
 	sp.check_call(["mkdir -p " + dirname], shell=True)
 

@@ -73,7 +73,7 @@ def main():
         
         eax.set_title(col)
         idx = idx + 1
-    fig.set_size_inches(11.69, 8.27)
+    fig.set_size_inches(29.7, 21)
     plt.legend()
     plt.savefig(datdir + "/graph.png", dpi=600)
     plt.show()
