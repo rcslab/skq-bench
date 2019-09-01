@@ -16,7 +16,7 @@ def parse(output):
     ret = memdata()
     succ_qps = False
     succ_read = False
-    table = [None, "avg", "std", "min", "5th", "10th", "90th", "95th", "99th"]
+    table = [None, "avg", "std", "min", "5th", "10th", "50th", "90th", "95th", "99th"]
     for line in output.splitlines():
         if line.find("Total QPS") != -1:
             spl = line.split()
@@ -28,7 +28,7 @@ def parse(output):
                 break
         elif line.find("read") != -1:
             spl = line.split()
-            if len(spl) == 9:
+            if len(spl) == 10:
                 for i in range(1, len(spl)):
                     ret.dat[table[i]] = float(spl[i])
                 succ_read = True
