@@ -24,7 +24,7 @@ def parse(output):
                 ret.qps = float(spl[3])
                 succ_qps = True
             else:
-                print("invalid QPS line: " + line)
+                #print("invalid QPS line: " + line)
                 break
         elif line.find("read") != -1:
             spl = line.split()
@@ -33,7 +33,7 @@ def parse(output):
                     ret.dat[table[i]] = float(spl[i])
                 succ_read = True
             else:
-                print("invalid read line: " + line)
+                #print("invalid read line: " + line)
                 break
     
     if not (succ_qps and succ_read):

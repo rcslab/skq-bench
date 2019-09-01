@@ -74,7 +74,7 @@ public:
 
   void print_header() {
       printf("#%-6s %6s %8s %8s %8s %8s %8s %8s\n", "type", "size",
-         "min", "max", "avg", "90th", "95th", "99th");
+         "min", "max", "avg", "50th", "90th", "95th", "99th");
   }
 
   void print_stats(const char *type, const char *size) {

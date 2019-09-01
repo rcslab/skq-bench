@@ -11,7 +11,7 @@ import memparse
 import getopt
 import math
 
-col_to_graph = ["avg", "90th", "95th", "99th"]
+col_to_graph = ["avg", "50th", "90th", "95th", "99th"]
 num_col = 1
 
 def process_dir(rootdir):
@@ -20,12 +20,17 @@ def process_dir(rootdir):
     for subdir in os.listdir(rootdir):
         each_dir = os.path.join(rootdir, subdir)
         if os.path.isfile(each_dir):
-            print("- " + subdir)
             output = None
             with open(each_dir, 'r') as file:
                 output = file.read()
-            eachobj = memparse.parse(output)
-            ret.append(eachobj)
+            try:
+                eachobj = memparse.parse(output)
+                print("Processed - " + subdir)
+                ret.append(eachobj)
+            except:
+                print("Unrecognized format - " + subdir)
+        
+    print("")
     return ret
 
 def main():    
@@ -37,8 +42,7 @@ def main():
             datdir = arg
 
     if datdir == None:
-        datdir = "/home/oscar/projs/kqsched/scripts/mem/results.d/sample"
-        #raise Exception("Must specify -d parameter")
+        raise Exception("Must specify -d parameter")
 
     dat = {}
 
@@ -63,9 +67,8 @@ def main():
             for ememdat in edat:
                 df_dict['qps'].append(ememdat.qps)
                 elat = ememdat.dat[col]
-                if elat == None:
-                    raise Exception(sched + " doesn't have col " + col)
-                df_dict['lat'].append(elat)
+                if elat != None:
+                    df_dict['lat'].append(elat)
             df = pd.DataFrame(df_dict)
             df = df.sort_values('qps')
             eax.set_yscale("log")
@@ -73,9 +76,9 @@ def main():
         
         eax.set_title(col)
         idx = idx + 1
-    fig.set_size_inches(29.7, 21)
+    fig.set_size_inches(23.4, 16.5)
     plt.legend()
-    plt.savefig(datdir + "/graph.png", dpi=600)
+    plt.savefig(datdir + "/graph.png", dpi=300)
     plt.show()
 
 main()

@@ -13,6 +13,17 @@ test_dir = "/tmp/tests.d"
 file_dir = os.path.dirname(os.path.realpath(__file__))
 root_dir = file_dir + "/../../"
 
+sample_filename = "sample.txt"
+
+log_filename = "log.txt"
+log_file = None
+
+def log_print(info):
+	print(info)
+	if log_file != None:
+		log_file.write(info + "\n")
+		log_file.flush()
+
 def make_sched_flag(sched, args):
 	return (sched & 0xFF) | (args & 0xFF) << 8
 
@@ -33,8 +44,11 @@ sched = [
 	#"arachne", SCHED_ARACHNE,
 	#"linox", SCHED_VANILLA_LINOX
 ]
+step_inc_pct = 100
+init_step = 100000
 
-load = [10, 30, 50, 70, 80, 90, 120, 150, 200, 250]
+term_pct = 5
+inc_pct = 50
 
 master = ["localhost"]
 server = ["skylake1"]
@@ -42,8 +56,8 @@ clients = ["skylake2", "skylake3", "skylake4", "skylake5", "skylake6", "skylake7
 
 threads = 12
 client_threads = 12
-warmup = 5
-duration = 10
+warmup = 3
+duration = 5
 conn_per_thread = 12
 hostfile = None
 
@@ -54,7 +68,7 @@ def get_cpu_str(threads):
 	ret = "cpuset -l 0-23" # + str(threads - 1)
 	return ret
 
-def remote_action(srv, cmd, blocking=True):
+def remote_action(srv, cmd, blocking=True, check=True):
 	sub = []
 	# start clients
 	for client in srv:
@@ -64,6 +78,8 @@ def remote_action(srv, cmd, blocking=True):
 	if blocking:
 		for p in sub:
 			p.wait()
+			if check and p.returncode != 0:
+				raise Exception("Command failed " + cmd)
 
 	return sub
 
@@ -75,16 +91,16 @@ def get_client_str(cl):
 
 def stop_all():
 	# stop clients
-	print("Stopping clients...")
-	remote_action(clients, "killall mutilate")
+	log_print("Stopping clients...")
+	remote_action(clients, "killall mutilate", check=False)
 
 	# stop server
-	print("Stopping server...")
-	remote_action(server, "killall memcached")
+	log_print("Stopping server...")
+	remote_action(server, "killall memcached", check=False)
 
 	# stop master
-	print("Stopping master...")
-	remote_action(master, "killall mutilate")
+	log_print("Stopping master...")
+	remote_action(master, "killall mutilate", check=False)
 
 
 def scan_stderr(cp, exclude = None):
@@ -105,7 +121,7 @@ def scan_stderr(cp, exclude = None):
 			if exclude != None:
 				if line.find(exclude) != -1:
 					return True
-			print("Error detected: idx - " + str(i) + " " + line)
+			log_print("Error detected: idx - " + str(i) + " " + line)
 			return False
 			
 	return True
@@ -120,7 +136,7 @@ def parse_host_file(fp):
 		spl = line.split(" ")
 		if len(spl) >= 2:
 			ret[spl[0]] = spl[1]
-			print("Parsed: hostname \"" + spl[0] + "\" -> \"" + spl[1] + "\"")
+			log_print("Parsed: hostname \"" + spl[0] + "\" -> \"" + spl[1] + "\"")
 	return ret
 
 def process_hostnames(names, hosts):
@@ -134,9 +150,8 @@ def process_hostnames(names, hosts):
 
 def run_exp(sc, ld, lstat):
 	while True:
-			
 		# start server
-		print("Starting server...")
+		log_print("Starting server...")
 		server_cmd = None
 		if sc == SCHED_VANILLA:
 			server_cmd = get_cpu_str(threads) + " " + test_dir + "/memcached/memcached -m 1024 -c 65536 -b 4096 -t " + str(threads)
@@ -152,25 +167,26 @@ def run_exp(sc, ld, lstat):
 		if lstat:
 			server_cmd = "sudo lockstat -A -P -s4 -n16777216 " + server_cmd + " -u " + get_username()
 
-		print(server_cmd)
+		log_print(server_cmd)
 		ssrv = remote_action(server, server_cmd, blocking=False)
  
 		# start clients
-		print("Starting clients...")
+		log_print("Starting clients...")
 		client_cmd = get_cpu_str(client_threads) + " " + test_dir + "/mutilate/mutilate -A -T " + str(client_threads)
-		print(client_cmd)
+		log_print(client_cmd)
 		sclt = remote_action(clients, client_cmd, blocking=False)
 
 		time.sleep(1)
 		# start master
-		print("Starting master...")
+		log_print("Starting master...")
 		master_cmd = test_dir + "/mutilate/mutilate -K fb_key -V fb_value -i fb_ia -u 0.03 " + \
 										" -c " + str(conn_per_thread) + \
 										" -w " + str(warmup) + \
 										" -t " + str(duration) + \
 										" -s " + server[0] + " " + get_client_str(clients) + \
-										" -q " + str(ld)
-		print(master_cmd)
+										" -q " + str(ld) + \
+										" --save " + test_dir + "/" + sample_filename
+		log_print(master_cmd)
 		sp = remote_action(master, master_cmd, blocking=False)
 		p = sp[0]
 
@@ -183,7 +199,7 @@ def run_exp(sc, ld, lstat):
 			if False \
 				or not scan_stderr(sp, "mutex.hpp") \
 				or not scan_stderr(sclt) \
-				or cur >= int(warmup + duration) * 2 \
+				or cur >= int(warmup + duration) * 3 \
 					:
 				break
 
@@ -202,9 +218,24 @@ def run_exp(sc, ld, lstat):
 			else:
 				return p.communicate()[0].decode(sys.getfilesystemencoding())
 
+def keep_results(eachdir, ld, output):
+	f = open(eachdir + "/l" + ld +".txt", "w")
+	f.write(output)
+	f.close()
+
+	#bzcmd = "bzip2 " + test_dir + "/" + sample_filename
+	#log_print(bzcmd)
+	#remote_action(master, bzcmd)
+
+	scpcmd = "scp " + master[0] + ":" + test_dir + "/" + sample_filename + " " + eachdir + "/l" + ld + "_sample.txt"
+	log_print(scpcmd)
+	sp.check_call(scpcmd, shell=True)
+
 def main():
 	global hostfile
 	global server
+	global log_file
+	global log_filename
 	global clients
 
 	options = getopt.getopt(sys.argv[1:], 'h:sl')[0]
@@ -218,8 +249,15 @@ def main():
 		elif opt in ('-l'):
 			lockstat=True
 			
+	dirname = "results.d/" + datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S') + \
+							"_" + str(threads) + "+" + str(len(clients)) + "x" + str(client_threads) + "x" + str(conn_per_thread) + \
+							("_lstat" if lockstat else "")
+	sp.check_call(["mkdir -p " + dirname], shell=True)
 
-	print("Configuration:\n" + \
+	log_file = open(dirname + "/" + log_filename, "w")
+	log_print("Results dir: " + dirname + "\n")
+
+	log_print("Configuration:\n" + \
 		  "Hostfile: " + ("None" if hostfile == None else hostfile) + "\n" \
 		  "Lockstat: " + str(lockstat))
 
@@ -227,13 +265,7 @@ def main():
 		hosts = parse_host_file(hostfile)
 		server = process_hostnames(server, hosts)
 		clients = process_hostnames(clients, hosts)
-
-	dirname = "results.d/" + datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S') + \
-							"_" + str(threads) + "+" + str(len(clients)) + "x" + str(client_threads) + "x" + str(conn_per_thread) + \
-							("_lstat" if lockstat else "")
-	sp.check_call(["mkdir -p " + dirname], shell=True)
-
-	print("Results dir: " + dirname + "\n")
+		master = process_hostnames(master, hosts)
 
 	stop_all()
 
@@ -241,41 +273,48 @@ def main():
 		esched = sched[i+1]
 		ename = sched[i]
 		eachdir = dirname + "/" + ename
-		sp.call(["mkdir -p " + eachdir], shell=True)
+		sp.check_call(["mkdir -p " + eachdir], shell=True)
 
-		print("============ Sched: " + str(ename) + " Flag: " + str(esched) + " Load: MAX ============")
+		log_print("============ Sched: " + str(ename) + " Flag: " + str(esched) + " Load: MAX ============")
+
 		output = run_exp(esched, 0, lockstat)
 
-		f = open(eachdir + "/lmax.txt", "w")
-		f.write(output)
-		f.close()
-		print("")
+		keep_results(eachdir, "max", output)
 
-		# lockstat only supports max throughput
 		if lockstat:
+			# lockstat only supports max throughput
 			continue
+
+		log_print(output)
 		
-		print(output)
-		mdat = memparse.parse(output)
-		max_load = int(mdat.qps)
-		
-		if max_load != None:
-			print("Max load: " + str(max_load))
-		else:
-			print("Failed to obtain the maximum load")
-			exit(1)
+		step_mul = 100
+		last_load = 0
+		cur_load = init_step
+		while True:
+			log_print("============ Sched: " + ename +  " Flag: " + str(esched) + " Load: " + str(cur_load) + " ============")
+			output = run_exp(esched, cur_load, lockstat)
+
+			parse = memparse.parse(output)
+
+			keep_results(eachdir, str(int(parse.qps)), output)
+
+			pct = int((parse.qps - last_load) / init_step * 100)
+			log_print("last_load: " + str(last_load) + " this_load: " + str(parse.qps) + " inc_pct: " + str(pct) + "%")
+
+			if pct <= term_pct:
+				log_print("inc_pct less than TERM_PCT " + str(term_pct) + "%. Done.")
+				break
+
+			if pct <= inc_pct:
+				step_mul += step_inc_pct
+				log_print("inc_pct less than INC_PCT " + str(inc_pct) + "%. Increasing step multiplier to " + str(step_mul) + "%")
+
+			last_load = parse.qps
+			cur_load += int(init_step * step_mul / 100)
+			log_print("")
+			
 	
-		for eload in load:
-			print("============ Sched: " + ename +  " Flag: " + str(esched) + " Load: " + str(eload) + "% ============")
-			real_load = int(max_load * eload / 100)
-			output = run_exp(esched, real_load, lockstat)
-
-			print(output)
-			f = open(eachdir + "/l" + str(eload) + ".txt", "w")
-			f.write(output)
-			f.close()
-			print("")
-
 	stop_all()
+	log_file.close()
 
 main()
