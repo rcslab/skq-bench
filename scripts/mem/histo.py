@@ -11,6 +11,7 @@ import json
 import memparse
 import getopt
 import math
+import concurrent.futures as CF
 
 num_bins = 1000
 extra_pct = [50]
@@ -25,24 +26,22 @@ def parse_file(f):
         ret.append(float(entry[1]))
     return ret
 
-def saveplot(f, data):
+def saveplot(files, data):
     plt.hist(data, num_bins)
     plt.xlabel("Latency")
     plt.ylabel("Frequency")
-    plt.title(os.path.basename(f))
+    plt.title(os.path.basename(files))
     f = plt.gcf()
     f.set_size_inches(11.69, 8.27)
-    f.savefig(f + ".png", dpi=160)
+    f.savefig(files + ".png", dpi=160)
     plt.clf()
-    print("Generated - " + f + ".png")
+    print("Generated - " + files + ".png")
 
 def output_extra_percentile(data):
     a = np.array(data)
     for pct in extra_pct:
         p = np.percentile(a, pct)
-        print(str(pct) + "th: " + p)
-
-        
+        print(str(pct) + "th: " + str(p))
 
 def sanitize(data):
     ret = []
@@ -53,22 +52,28 @@ def sanitize(data):
             ret.append(i)
     return ret
 
+
+executor = CF.ProcessPoolExecutor(max_workers=int(os.cpu_count()))
+
+def process_file(each_dir):
+    try:
+        print("Processing " + each_dir + " ...")
+        f = open(each_dir, 'r')
+        data = parse_file(f)
+        #output_extra_percentile(data)   
+        sdata = sanitize(data)       
+        saveplot(each_dir, sdata)
+    except:
+        None
+
 def process_dir(rootdir):
-    print("Processing " + rootdir + " ...")
     for subdir in os.listdir(rootdir):
         each_dir = os.path.join(rootdir, subdir)
         if os.path.isfile(each_dir):
-            f = open(each_dir, 'r')
-            try:
-                data = parse_file(f)
-                output_extra_percentile(each_dir, data)   
-                sdata = sanitize(data)       
-                saveplot(each_dir, sdata)
-            except:
-                None
+            if each_dir.endswith("sample.txt") or each_dir.endswith(".sample"):
+                executor.submit(process_file, each_dir)
         else:
             process_dir(each_dir)
-        print("")
 
 def main():    
     datdir = None
@@ -83,5 +88,7 @@ def main():
         #raise Exception("Must specify -d parameter")
 
     process_dir(datdir)
+    executor.shutdown()
 
-main()
+if __name__ == "__main__":
+    main()

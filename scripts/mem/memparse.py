@@ -17,6 +17,7 @@ def parse(output):
     succ_qps = False
     succ_read = False
     table = [None, "avg", "std", "min", "5th", "10th", "50th", "90th", "95th", "99th"]
+    table2 = [None, "avg", "std", "min", "5th", "10th", "90th", "95th", "99th"]
     for line in output.splitlines():
         if line.find("Total QPS") != -1:
             spl = line.split()
@@ -31,6 +32,10 @@ def parse(output):
             if len(spl) == 10:
                 for i in range(1, len(spl)):
                     ret.dat[table[i]] = float(spl[i])
+                succ_read = True
+            elif len(spl) == 9:
+                for i in range(1, len(spl)):
+                    ret.dat[table2[i]] = float(spl[i])
                 succ_read = True
             else:
                 #print("invalid read line: " + line)

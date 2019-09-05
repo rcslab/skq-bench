@@ -10,8 +10,8 @@ import json
 import memparse
 import getopt
 import math
-
-col_to_graph = ["avg", "50th", "90th", "95th", "99th"]
+import concurrent.futures as CF
+col_to_graph = ["avg", "90th", "95th", "99th"]
 num_col = 1
 
 def process_dir(rootdir):
@@ -19,11 +19,10 @@ def process_dir(rootdir):
     print("Processing " + rootdir + " ...")
     for subdir in os.listdir(rootdir):
         each_dir = os.path.join(rootdir, subdir)
-        if os.path.isfile(each_dir):
+        if os.path.isfile(each_dir) and each_dir.endswith(".txt"):
             output = None
-            with open(each_dir, 'r') as file:
-                output = file.read()
             try:
+                output = open(each_dir, 'r').read()
                 eachobj = memparse.parse(output)
                 print("Processed - " + subdir)
                 ret.append(eachobj)
@@ -33,7 +32,7 @@ def process_dir(rootdir):
     print("")
     return ret
 
-def main():    
+def main():
     datdir = None
     options = getopt.getopt(sys.argv[1:], 'd:')[0]
 
@@ -42,7 +41,8 @@ def main():
             datdir = arg
 
     if datdir == None:
-        raise Exception("Must specify -d parameter")
+        datdir = "/home/oscar/projs/kqsched/scripts/mem/results.d/sample"
+        #raise Exception("Must specify -d parameter")
 
     dat = {}
 
@@ -81,4 +81,5 @@ def main():
     plt.savefig(datdir + "/graph.png", dpi=300)
     plt.show()
 
-main()
+if __name__ == "__main__":
+    main()

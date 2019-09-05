@@ -6442,6 +6442,7 @@ static int server_socket_unix(const char *path, int access_mask) {
  * rather than absolute UNIX timestamps, a space savings on systems where
  * sizeof(time_t) > sizeof(unsigned int).
  */
+volatile int vtime = 0;
 volatile rel_time_t current_time;
 static struct event clockevent;
 /* libevent uses a monotonic clock when available for event scheduling. Aside
@@ -6487,11 +6488,12 @@ static void clock_handler(const int fd, const short which, void *arg) {
     event_base_set(main_base, &clockevent);
     evtimer_add(&clockevent, &t);
 
-    if (settings.kqdump_interval > 0 && current_time % settings.kqdump_interval == 0) {
-        fprintf(stdout, "Dumping KQ...\n");
+    if (settings.kqdump_interval > 0 && vtime % settings.kqdump_interval == 0) {
+        fprintf(stdout, "\n============ Dumping KQ, virtual timestamp: %d ============\n", vtime);
         event_kq_dump(g_evb);
     }
-
+    vtime++;
+    
 #if defined(HAVE_CLOCK_GETTIME) && defined(CLOCK_MONOTONIC)
     if (monotonic) {
         struct timespec ts;
@@ -7143,6 +7145,7 @@ int main (int argc, char **argv) {
           "o:"  /* Extended generic options */
           "q:" /* evconf flags */
           "e" /* affinity */
+          "j:" /* kqueue dump interval */
           ;
 
     /* process arguments */
@@ -7183,6 +7186,7 @@ int main (int argc, char **argv) {
         {"extended", required_argument, 0, 'o'},
         {"event-flags", required_argument, 0, 'q'},
         {"set-affinity", no_argument, 0, 'e'},
+        {"dump-interval", required_argument, 0, 'j'},
         {0, 0, 0, 0}
     };
     int optindex;
@@ -7290,6 +7294,9 @@ int main (int argc, char **argv) {
             break;
         case 'e':
             settings.set_affinity = true;
+            break;
+        case 'j':
+            settings.kqdump_interval = atoi(optarg);
             break;
         case 'f':
             settings.factor = atof(optarg);

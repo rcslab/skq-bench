@@ -4,6 +4,7 @@ root="../"
 
 servers="localhost skylake1 skylake2 skylake3 skylake4 skylake5 skylake6 skylake7 skylake8"
 
+
 rsync_flags="-qvchar"
 
 init() {

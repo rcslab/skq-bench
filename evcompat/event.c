@@ -29,16 +29,23 @@ ev_signal(struct event *ev)
     pthread_cond_signal(&ev->stop_cv);
 }
 
+static char dump_buf[1024 * 1024 + 1];
+
 void 
 event_kq_dump(struct event_base *base)
 {
     if ((base->eb_flags & EVB_MULTI) == EVB_MULTI) {
         if (MULT_KQ) {
             int ret;
-            ret = ioctl(base->eb_kqfd, FKQMPRNT);
+            uintptr_t args = (uintptr_t)dump_buf;
+            fprintf(stdout, "Userspace buf: %p\n", (void*)args);
+            memset(dump_buf, 0, 1024 * 1024 + 1);
+            ret = ioctl(base->eb_kqfd, FKQMPRNT, &args);
             if (ret == -1) {
                 fprintf(stderr, "print ioctl failed.");
                 abort();
+            } else {
+                fprintf(stdout, "%s\n", dump_buf);
             }
         }
     }
