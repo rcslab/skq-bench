@@ -26,29 +26,36 @@ def log_print(info):
 		log_file.write(info + "\n")
 		log_file.flush()
 
-def make_sched_flag(sched, args, flag = 0, fargs = 0):
-	return (sched & 0xFF) | (args & 0xFF) << 8 | (flag & 0xFF) << 16 | (fargs & 0xFF) << 24
+def make_sched_flag(sched, args, feat = 0, fargs = 0):
+	return (sched & 0xFF) | (args & 0xFF) << 8 | (feat & 0xFF) << 16 | (fargs & 0xFF) << 24
 
 
 SCHED_VANILLA=-1
 SCHED_ARACHNE=-2
 SCHED_VANILLA_LINOX=-3
 
+SCHED_QUEUE = 1
+SCHED_CPU = 2
+SCHED_BEST = 4
+
+SCHED_FEAT_WS = 1
+
 sched = [
 	"vanilla", -1,
-	"q0_ws", make_sched_flag(1, 0, flag=1, fargs=1),
-	"q1_ws", make_sched_flag(1, 1, flag=1, fargs=1),
-	"q2_ws", make_sched_flag(1, 2, flag=1, fargs=1),
-	"cpu0_ws", make_sched_flag(2, 0, flag=1, fargs=1),
-    "cpu1_ws", make_sched_flag(2, 1, flag=1, fargs=1),
-    "cpu2_ws", make_sched_flag(2, 2, flag=1, fargs=1),
-    "queue0", make_sched_flag(1, 0),
-    "queue1", make_sched_flag(1, 1),
-    "queue2", make_sched_flag(1, 2),
-    "best2", make_sched_flag(4, 2),
-	"cpu0", make_sched_flag(2, 0),
-	"cpu1", make_sched_flag(2, 1),
-	"cpu2", make_sched_flag(2, 2),
+	"best2", make_sched_flag(SCHED_BEST, 2),
+	"best2_ws", make_sched_flag(SCHED_BEST, 2, feat=SCHED_FEAT_WS, fargs=1),
+	"cpu0", make_sched_flag(SCHED_CPU, 0),
+	"queue0", make_sched_flag(SCHED_QUEUE, 0),
+	"queue1", make_sched_flag(SCHED_QUEUE, 1),
+    "queue2", make_sched_flag(SCHED_QUEUE, 2),
+	"q0_ws", make_sched_flag(SCHED_QUEUE, 0, feat=SCHED_FEAT_WS, fargs=1),
+	"q1_ws", make_sched_flag(SCHED_QUEUE, 1, feat=SCHED_FEAT_WS, fargs=1),
+	"q2_ws", make_sched_flag(SCHED_QUEUE, 2, feat=SCHED_FEAT_WS, fargs=1),
+	"cpu0_ws", make_sched_flag(SCHED_CPU, 0, feat=SCHED_FEAT_WS, fargs=1),
+    "cpu1_ws", make_sched_flag(SCHED_CPU, 1, feat=SCHED_FEAT_WS, fargs=1),
+    "cpu2_ws", make_sched_flag(SCHED_CPU, 2, feat=SCHED_FEAT_WS, fargs=1),
+	"cpu1", make_sched_flag(SCHED_CPU, 1),
+	"cpu2", make_sched_flag(SCHED_CPU, 2),
     #"rand", make_sched_flag(0, 0),
 	#"arachne", SCHED_ARACHNE,
 	#"linox", SCHED_VANILLA_LINOX
@@ -61,9 +68,9 @@ init_step = 100000
 term_pct = 5
 inc_pct = 50
 
-master = ["localhost"]
+master = ["skylake2"]
 server = ["skylake1"]
-clients = ["skylake2", "skylake3", "skylake4", "skylake5", "skylake6", "skylake7", "skylake8"]
+clients = ["skylake3", "skylake4", "skylake5", "skylake6", "skylake7", "skylake8"]
 
 threads = 12
 client_threads = 12
@@ -80,8 +87,8 @@ client_only = False
 def get_username():
     return pwd.getpwuid( os.getuid() )[0]
 
-def get_cpu_str(threads):
-	ret = "cpuset -l 0-23" # + str(threads - 1)
+def get_cpu_str():
+	ret = "cpuset -l 0-23 "
 	return ret
 
 def remote_action(srv, cmd, blocking=True, check=True, verbose=False):
@@ -132,12 +139,16 @@ def scan_stderr(cp, exclude = None):
 	for i in range(len(sels)):
 		while True:
 			events = sels[i].poll(1)
-
+			
 			if len(events) is 0:
 				break
 
 			line = cp[i].stderr.readline()
 			line = line.decode(sys.getfilesystemencoding())
+			line = line.strip()
+			if len(line) == 0:
+				break
+
 			if exclude != None:
 				for exc in exclude:
 					if (exc != None) and (re.match(exc, line) != None):
@@ -179,12 +190,12 @@ def run_exp(sc, ld, lstat):
 			log_print("Starting server...")
 			server_cmd = None
 			if sc == SCHED_VANILLA:
-				server_cmd = get_cpu_str(threads) + " " + test_dir + "/memcached/memcached -m 1024 -c 65536 -b 4096 -t " + str(threads)
+				server_cmd = get_cpu_str() + " " + test_dir + "/memcached/memcached -m 1024 -c 65536 -b 4096 -t " + str(threads)
 			elif sc == SCHED_VANILLA_LINOX:
-				server_cmd = "limit core 0; export EVENT_NOEPOLL=1; " + get_cpu_str(threads) + " " + \
+				server_cmd = "limit core 0; export EVENT_NOEPOLL=1; " + get_cpu_str() + " " + \
 												test_dir + "/memcached_linox/memcached -m 1024 -c 65536 -b 4096 -t " + str(threads)
 			elif sc == SCHED_ARACHNE:
-				server_cmd = "limit core 0; " + get_cpu_str(threads) + " " + test_dir + "/memcached-A/memcached -m 1024 -c 65536 -b 4096 -t 1 " + \
+				server_cmd = "limit core 0; " + get_cpu_str() + " " + test_dir + "/memcached-A/memcached -m 1024 -c 65536 -b 4096 -t 1 " + \
 																	"--minNumCores 2 --maxNumCores " + str(threads - 1)
 			else:
 				server_cmd = test_dir + "/mem/memcached -e -m 1024 -c 65536 -b 4096 -t " + str(threads) + " -q " + str(sc) + (" -j 1 " if dump else "")
@@ -197,14 +208,15 @@ def run_exp(sc, ld, lstat):
 
 		# start clients
 		log_print("Starting clients...")
-		client_cmd = get_cpu_str(client_threads) + " " + test_dir + "/mutilate/mutilate -A -T " + str(client_threads)
+		client_cmd = get_cpu_str() + " " + test_dir + "/mutilate/mutilate -A -T " + str(client_threads)
 		log_print(client_cmd)
 		sclt = remote_action(clients, client_cmd, blocking=False)
 
 		time.sleep(1)
 		# start master
 		log_print("Starting master...")
-		master_cmd = test_dir + "/mutilate/mutilate -K fb_key -V fb_value -i fb_ia -u 0.03 " + \
+		master_cmd = get_cpu_str() + test_dir + "/mutilate/mutilate -K fb_key -V fb_value -i fb_ia -u 0.03 -Q 1000 -T " + str(client_threads) + \
+									    " -C 1 " + \
 										" -c " + str(conn_per_thread) + \
 										" -w " + str(warmup) + \
 										" -t " + str(duration) + \
@@ -221,9 +233,10 @@ def run_exp(sc, ld, lstat):
 			# either failed or timeout
 			# we use failure detection to save time for long durations
 			if False \
-				or not scan_stderr(ssrv, exclude=["warn", "DEBUG", (".*" if truss else None)]) \
+				or not scan_stderr(ssrv, exclude=[".*warn.*", ".*DEBUG.*", (".*" if truss else None)]) \
 				or not scan_stderr(sclt) \
 				or cur >= int(warmup + duration) * 2 \
+				or not scan_stderr(sp, exclude=[".*mutex.hpp.*"]) \
 					:
 				break
 			

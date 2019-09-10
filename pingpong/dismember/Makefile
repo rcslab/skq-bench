@@ -1,10 +1,12 @@
+
 COMPILER_FEATURES=c++11
 
-PROG_CXX= kqclient
+PROG_CXX= dismember
 LDADD+= -lthr
+CFLAGS += -Wall -Wextra -Werror
 
 MK_MAN=no
 
-SRCS= kqclient.cc
+SRCS= dismember.cc
 
 .include <bsd.prog.mk>

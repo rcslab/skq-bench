@@ -1,5 +1,0 @@
-
-The graph tools require Matplotlib, Numpy and Pandas installed in Python 3.6.
-
-# pkg install py36-pandas py36-matplotlib py36-numpy
-

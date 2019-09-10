@@ -51,12 +51,16 @@ def main():
         if not os.path.isfile(each_dir):
             dat[subdir] = process_dir(each_dir)
     
+    colormap = plt.cm.nipy_spectral
+    colors = [colormap(i) for i in np.linspace(0, 1, 16)]
+
     fig, rax = plt.subplots(math.ceil((len(col_to_graph)) / num_col), num_col)
 
     idx = 0
     for col in col_to_graph:
         print("Generating graph for " + col + " ...")
         eax = rax[idx]
+        eax.set_prop_cycle('color', colors)
         for sched in dat:
             df_dict = {}
             df_dict['qps'] = []
@@ -73,7 +77,6 @@ def main():
             df = df.sort_values('qps')
             eax.set_yscale("log")
             eax.plot('qps', 'lat', data = df, label=sched, marker='o')
-        
         eax.set_title(col)
         idx = idx + 1
     fig.set_size_inches(23.4, 16.5)
