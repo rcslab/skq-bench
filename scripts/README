@@ -1,0 +1,19 @@
+In this directory you should only run init.sh and compile.sh
+
+- init.sh initializes the target machine including installing packages, setting up linux compat layer and setting appropriate sysctls. This script is required to run on all new machines or machines that rebooted.
+
+- compile.sh synchronizes directories and compiles all benchmark programs. You need to run this script to prapogate the changes to target machines.
+
+Pretty much all python scripts require adding ${project_root}/scripts/pylib to your $PYTHONPATH variable. To make VSCode recognize this, set the corresponding variable inside a shell and then run "code-oss" from the shell.
+The shell command to add the python path is:
+export PYTHONPATH="$PYTHONPATH:${pylib_dir}"
+
+- pylib:
+libtc: test framework that includes log and directory management and useful helper functions
+      call tc.init(id) to initialize the library and create the output directory named "${date}_id"
+      call tc.begin(testid) to start a test (causes ${testid} directory to be created inside the output directory)
+      call tc.end() to end the current test
+      call tc.get_odir() to get the current output directory (changes with tc_begin())
+      call tc.log_print() to print and log to the log file
+
+memparse: provides functions to parse mutilate output and latency sample files

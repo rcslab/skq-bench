@@ -9,21 +9,20 @@
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/event.h>
-#include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <netinet/in.h>
 #include <arpa/inet.h>
 #include <pthread_np.h>
 #include <random>
 #include <sys/types.h>
 #include <sys/sysctl.h>
 #include <vector>
-#include <immintrin.h>
 
 #include "../common.h"
 
 using namespace std;
 
-#define NEVENT (64)
+#define NEVENT (256)
 #define SOCK_BACKLOG (10000)
 
 struct server_option {
@@ -81,13 +80,15 @@ server_socket_prepare(vector<int> *socks)
 		}
 
 		if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable)) < 0) {
-			perror("server listen setsockopt reuseaddr");
-			exit(1);
+			E("server listen setsockopt reuseaddr");
 		}
 
 		if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(enable)) < 0) {
-			perror("server listen setsockopt reuseport");
-			exit(1);
+			E("server listen setsockopt reuseport");
+		}
+
+		if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(enable)) < 0) {
+			E("server listen setsockopt NODELAY");
 		}
 
 		status = ::bind(fd, (struct sockaddr*)&server_addr, sizeof(server_addr));
@@ -171,7 +172,7 @@ handle_event(struct worker_thread *tinfo, struct kevent* kev)
 
 	if (memcmp(data, MAGIC_STRING, MESSAGE_LENGTH) == 0) {
 		
-		V("Connection %d asked for QPS - %ld\n", conn_fd, perf_avg);
+		V("Connection %d asked for QPS - %ld\n", conn_fd, 0l);
 
 		status = writebuf(conn_fd, (void*)&perf_avg, sizeof(long));
 
@@ -460,6 +461,11 @@ main(int argc, char *argv[])
 
 			if (conn_fd < 0) {
 				W("Accept() failed on socket %d\n", (int)kev.ident);
+				continue;
+			}
+
+			if (setsockopt(conn_fd, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(enable)) < 0) {
+				W("setsockopt() failed on socket %d\n", conn_fd);
 				continue;
 			}
 

@@ -7,7 +7,7 @@ import sys
 import re
 import os
 import json
-import memparse
+import memparse as mp
 import getopt
 import math
 import concurrent.futures as CF
@@ -23,7 +23,7 @@ def process_dir(rootdir):
             output = None
             try:
                 output = open(each_dir, 'r').read()
-                eachobj = memparse.parse(output)
+                eachobj = mp.parse_mut_output(output)
                 print("Processed - " + subdir)
                 ret.append(eachobj)
             except:

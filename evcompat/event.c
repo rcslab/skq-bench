@@ -38,7 +38,7 @@ event_kq_dump(struct event_base *base)
         if (MULT_KQ) {
             int ret;
             uintptr_t args = (uintptr_t)dump_buf;
-            fprintf(stdout, "Userspace buf: %p\n", (void*)args);
+            //fprintf(stdout, "Userspace buf: %p\n", (void*)args);
             memset(dump_buf, 0, 1024 * 1024 + 1);
             ret = ioctl(base->eb_kqfd, FKQMPRNT, &args);
             if (ret == -1) {

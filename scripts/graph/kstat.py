@@ -8,7 +8,6 @@ import sys
 import re
 import os
 import json
-import memparse
 import getopt
 import math
 import xml.etree.ElementTree as ET
@@ -69,10 +68,10 @@ def parse_file(f):
     data = {}
     data['ts'] = []
     data['dat'] = []
-
+    ts = 0
     while i < len(lines):
         eline = lines[i]
-        if eline.find("Dumping KQ") != -1:
+        if eline.find("KQ") != -1 and eline.find("DUMP") != -1 :
             if start:
                 try:
                     data["dat"].append(ET.fromstring(seg))
@@ -81,12 +80,9 @@ def parse_file(f):
                     None
                 start = False
                 seg = ""
-                ts = 0
 
-            parts = eline.split()
-            if len(parts) == 7:
-                start = True
-                ts = int(parts[5])
+            start = True
+            ts = ts + 1
                     
         elif start:
             if eline.find("Userspace") == -1:
@@ -129,7 +125,7 @@ def main():
             datdir = arg
 
     if datdir == None:
-        datdir = "/home/oscar/projs/kqsched/scripts/mem/results.d/sample"
+        datdir = "/home/oscar/projs/kqsched/scripts/pingpong/results.d/sample"
         #raise Exception("Must specify -d parameter")
 
     process_dir(datdir)

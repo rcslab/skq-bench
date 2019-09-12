@@ -8,23 +8,12 @@ import sys
 import re
 import os
 import json
-import memparse
 import getopt
 import math
 import concurrent.futures as CF
 
 num_bins = 1000
-extra_pct = [50]
-
-def parse_file(f):
-    ret = []
-    lines = f.readlines()
-    for line in lines:
-        entry = line.split()
-        if len(entry) != 2:
-            raise Exception("Unrecognized line: " + line)
-        ret.append(float(entry[1]))
-    return ret
+extra_pct = []
 
 def saveplot(files, data):
     plt.hist(data, num_bins)
@@ -58,9 +47,8 @@ executor = CF.ProcessPoolExecutor(max_workers=int(os.cpu_count()))
 def process_file(each_dir):
     try:
         print("Processing " + each_dir + " ...")
-        f = open(each_dir, 'r')
-        data = parse_file(f)
-        #output_extra_percentile(data)   
+        data = memparse.parse_mut_sample(each_dir)[1]
+        output_extra_percentile(data)   
         sdata = sanitize(data)       
         saveplot(each_dir, sdata)
     except:
@@ -72,6 +60,7 @@ def process_dir(rootdir):
         if os.path.isfile(each_dir):
             if each_dir.endswith("sample.txt") or each_dir.endswith(".sample"):
                 executor.submit(process_file, each_dir)
+                #process_file(each_dir)
         else:
             process_dir(each_dir)
 
@@ -84,7 +73,7 @@ def main():
             datdir = arg
 
     if datdir == None:
-        datdir = "/home/oscar/projs/kqsched/scripts/mem/results.d/sample"
+        datdir = "/home/oscar/projs/kqsched/scripts/pingpong/results.d/sample"
         #raise Exception("Must specify -d parameter")
 
     process_dir(datdir)
@@ -92,3 +81,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    

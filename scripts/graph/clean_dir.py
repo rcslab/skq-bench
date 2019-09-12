@@ -13,9 +13,6 @@ import math
 import concurrent.futures as CF
 import shutil
 
-col_to_graph = ["avg", "90th", "95th", "99th"]
-num_col = 1
-
 def process_dir(rootdir):
     ret = []
     print("Processing " + rootdir + " ...")

@@ -5,6 +5,7 @@
 #include <sys/socket.h>
 #include <sys/event.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
 
 #include <unistd.h>
@@ -18,6 +19,7 @@
 #include <set>
 
 #include "../common.h"
+#include "Generator.h"
 
 using namespace std;
 
@@ -89,6 +91,7 @@ enum conn_state {
 };
 
 struct kqconn{
+	Generator *gen;
 	int conn_fd;
 	int timer;
 	int timer_expired;
@@ -116,6 +119,9 @@ void kqconn_cleanup(struct kqconn *conn)
 	if (status == -1) {
 		E("Error kevent kqconn_cleanup\n");
 	}
+
+	delete conn->gen;
+	delete conn;
 }
 
 void kqconn_state_machine(struct kqconn *conn)
@@ -166,7 +172,7 @@ void kqconn_state_machine(struct kqconn *conn)
 					//V("Packet sent in conn %d\n", conn->conn_fd);
 
 					conn->depth++;
-					conn->next_send += 1000 * 1000 / ((options.target_qps / options.client_thread_count) / conn->conns->size());
+					conn->next_send += (int)(conn->gen->generate() * 1000000.0);
 					conn->last_send = now;
 					conn->state = STATE_WAITING;
 
@@ -259,6 +265,9 @@ worker_thread(int id, int notif_pipe, vector<struct datapt*> *data)
 			if (setsockopt(conn_fd, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(enable)) < 0) {
 				E("setsockopt reuseport");
 			}
+			if (setsockopt(conn_fd, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(enable)) < 0) {
+				E("setsockopt() failed on socket %d\n", conn_fd);
+			}
 			if (connect(conn_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) != 0) {
 				E("Connection %d connect() failed. Dropping. Err: %d\n", conn_fd, errno);
 			}
@@ -277,6 +286,8 @@ worker_thread(int id, int notif_pipe, vector<struct datapt*> *data)
 			english->timer_expired = 0;
 			english->state = STATE_WAITING;
 			english->stats = data;
+			english->gen = createFacebookIA();
+			english->gen->set_lambda((double)options.target_qps / (double)(options.client_thread_count * options.client_conn));
 
 			EV_SET(&ev[0], english->conn_fd, EVFILT_READ, EV_ADD, 0, 0, english);
 			EV_SET(&ev[1], english->timer, EVFILT_TIMER, EV_ADD | EV_ONESHOT, NOTE_USECONDS, 0, english);
@@ -308,11 +319,8 @@ worker_thread(int id, int notif_pipe, vector<struct datapt*> *data)
 			struct kqconn *conn = (struct kqconn *)ev.udata;
 
 			if (ev.flags & EV_EOF) {
-				W("Connection %d dropped due to EOF. ERR: %d\n", conn->conn_fd, ev.fflags);
-				vector<struct kqconn*>::iterator pos = find(conns.begin(), conns.end(), conn);
-				conns.erase(pos);
-				kqconn_cleanup(conn);
-				delete conn;
+				/* just error */
+				E("Connection %d dropped due to EOF. ERR: %d\n", conn->conn_fd, ev.fflags);
 				continue;
 			}
 
@@ -334,7 +342,6 @@ worker_thread(int id, int notif_pipe, vector<struct datapt*> *data)
 
 	for (uint32_t i = 0; i < conns.size(); i++) {
 		kqconn_cleanup(conns.at(i));
-		delete conns.at(i);
 	}
 
 	close(kq);

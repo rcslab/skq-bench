@@ -9,9 +9,9 @@ import sys
 import getopt
 import numpy as np
 import re
-import memparse as mp
 
-from libtc import *
+import memparse as mp
+import libtc as tc
 
 step_inc_pct = 100
 init_step = 100000
@@ -27,19 +27,20 @@ sample_filename = "sample.txt"
 
 sched = [
 	"vanilla", -1,
-	"queue0", tc_make_sched_flag(SCHED_QUEUE, 0),
-	"queue1", tc_make_sched_flag(SCHED_QUEUE, 1),
-    "queue2", tc_make_sched_flag(SCHED_QUEUE, 2),
-	"q0_ws", tc_make_sched_flag(SCHED_QUEUE, 0, feat=SCHED_FEAT_WS, fargs=1),
-	"q1_ws", tc_make_sched_flag(SCHED_QUEUE, 1, feat=SCHED_FEAT_WS, fargs=1),
-	"q2_ws", tc_make_sched_flag(SCHED_QUEUE, 2, feat=SCHED_FEAT_WS, fargs=1),
-	"cpu0_ws", tc_make_sched_flag(SCHED_CPU, 0, feat=SCHED_FEAT_WS, fargs=1),
-    "cpu1_ws", tc_make_sched_flag(SCHED_CPU, 1, feat=SCHED_FEAT_WS, fargs=1),
-    "cpu2_ws", tc_make_sched_flag(SCHED_CPU, 2, feat=SCHED_FEAT_WS, fargs=1),
-    "best2", tc_make_sched_flag(SCHED_BEST, 2),
-	"cpu0", tc_make_sched_flag(SCHED_CPU, 0),
-	"cpu1", tc_make_sched_flag(SCHED_CPU, 1),
-	"cpu2", tc_make_sched_flag(SCHED_CPU, 2),
+	"cpu0", tc.make_sched_flag(tc.SCHED_CPU, 0),
+	"best2", tc.make_sched_flag(tc.SCHED_BEST, 2),
+	"best2_ws", tc.make_sched_flag(tc.SCHED_BEST, 2, feat=tc.SCHED_FEAT_WS, fargs=1),
+	"queue0", tc.make_sched_flag(tc.SCHED_QUEUE, 0),
+	"queue1", tc.make_sched_flag(tc.SCHED_QUEUE, 1),
+    "queue2", tc.make_sched_flag(tc.SCHED_QUEUE, 2),
+	"q0_ws", tc.make_sched_flag(tc.SCHED_QUEUE, 0, feat=tc.SCHED_FEAT_WS, fargs=1),
+	"q1_ws", tc.make_sched_flag(tc.SCHED_QUEUE, 1, feat=tc.SCHED_FEAT_WS, fargs=1),
+	"q2_ws", tc.make_sched_flag(tc.SCHED_QUEUE, 2, feat=tc.SCHED_FEAT_WS, fargs=1),
+	"cpu0_ws", tc.make_sched_flag(tc.SCHED_CPU, 0, feat=tc.SCHED_FEAT_WS, fargs=1),
+    "cpu1_ws", tc.make_sched_flag(tc.SCHED_CPU, 1, feat=tc.SCHED_FEAT_WS, fargs=1),
+    "cpu2_ws", tc.make_sched_flag(tc.SCHED_CPU, 2, feat=tc.SCHED_FEAT_WS, fargs=1),
+	"cpu1", tc.make_sched_flag(tc.SCHED_CPU, 1),
+	"cpu2", tc.make_sched_flag(tc.SCHED_CPU, 2),
 ]
 
 master = ["skylake2"]
@@ -52,6 +53,7 @@ warmup = 5
 duration = 10
 cooldown = 0
 conn_per_thread = 12
+server_delay = False
 
 
 hostfile = None
@@ -59,23 +61,19 @@ dump = False
 lockstat = False
 client_only = False
 
-def get_cpu_str(threads):
-	ret = "cpuset -l 0-23" # + str(threads - 1)
-	return ret
-
 def stop_all():
 	# stop clients
-	tc_log_print("Stopping clients...")
-	tc_remote_exec(clients, "killall -9 dismember", check=False)
+	tc.log_print("Stopping clients...")
+	tc.remote_exec(clients, "killall -9 dismember", check=False)
 
 	if not client_only:
 		# stop server
-		tc_log_print("Stopping server...")
-		tc_remote_exec(server, "killall -9 ppd", check=False)
+		tc.log_print("Stopping server...")
+		tc.remote_exec(server, "killall -9 ppd", check=False)
 
 	# stop master
-	tc_log_print("Stopping master...")
-	tc_remote_exec(master, "killall -9 dismember", check=False)
+	tc.log_print("Stopping master...")
+	tc.remote_exec(master, "killall -9 dismember", check=False)
 
 def get_client_str(clt):
 	ret = " "
@@ -83,26 +81,17 @@ def get_client_str(clt):
 		ret += " -a " + client + " "
 	return ret
 
-def parse_file(f):
-	qps = []
-	lat = []
-	lines = f.readlines()
-	for line in lines:
-		entry = line.split()
-		if len(entry) != 2:
-			raise Exception("Unrecognized line: " + line)
-		qps.append(float(entry[0]))
-		lat.append(float(entry[1]))
-	return qps, lat
-
 def run_exp(sc, ld, lstat):
 	while True:
 		if client_only:
 			ssrv = None
 		else:
 			# start server
-			tc_log_print("Starting server...")
-			server_cmd = test_dir + "/pingpong/ppd/ppd -a -D -t " + str(threads)
+			tc.log_print("Starting server...")
+			server_cmd = test_dir + "/pingpong/ppd/ppd -a -t " + str(threads)
+
+			if server_delay:
+				server_cmd += " -D "
 			
 			if lstat:
 				server_cmd = "sudo lockstat -A -P -s4 -n16777216 " + server_cmd
@@ -112,20 +101,20 @@ def run_exp(sc, ld, lstat):
 				if dump:
 					server_cmd += " -d 1 "
 
-			tc_log_print(server_cmd)
+			tc.log_print(server_cmd)
 
-			ssrv = tc_remote_exec(server, server_cmd, blocking=False)
+			ssrv = tc.remote_exec(server, server_cmd, blocking=False)
 
 		# start clients
-		tc_log_print("Starting clients...")
-		client_cmd = get_cpu_str(client_threads) + " " + test_dir + "/pingpong/dismember/dismember -A"
-		tc_log_print(client_cmd)
-		sclt = tc_remote_exec(clients, client_cmd, blocking=False)
+		tc.log_print("Starting clients...")
+		client_cmd = tc.get_cpuset_core(client_threads) + " " + test_dir + "/pingpong/dismember/dismember -A"
+		tc.log_print(client_cmd)
+		sclt = tc.remote_exec(clients, client_cmd, blocking=False)
 
 		time.sleep(1)
 		# start master
-		tc_log_print("Starting master...")
-		master_cmd = get_cpu_str(client_threads) + " " + test_dir + "/pingpong/dismember/dismember " + \
+		tc.log_print("Starting master...")
+		master_cmd = tc.get_cpuset_core(client_threads) + " " + test_dir + "/pingpong/dismember/dismember " + \
 			                  get_client_str(clients) + \
 							  " -s " + server[0] + \
 							  " -q " + str(ld) + \
@@ -138,8 +127,8 @@ def run_exp(sc, ld, lstat):
 							  " -w " + str(duration) + \
 							  " -W " + str(warmup)
 
-		tc_log_print(master_cmd)
-		sp = tc_remote_exec(master, master_cmd, blocking=False)
+		tc.log_print(master_cmd)
+		sp = tc.remote_exec(master, master_cmd, blocking=False)
 		p = sp[0]
 
 		success = False
@@ -148,9 +137,9 @@ def run_exp(sc, ld, lstat):
 			# either failed or timeout
 			# we use failure detection to save time for long durations
 			if False \
-				or not tc_scan_stderr(sp, exclude=[".*warn.*", ".*WARN.*", ".*DEBUG.*"]) \
-				or not tc_scan_stderr(ssrv, exclude=[".*warn.*", ".*WARN.*", ".*DEBUG.*"]) \
-				or not tc_scan_stderr(sclt, exclude=[".*warn.*", ".*WARN.*", ".*DEBUG.*"]) \
+				or not tc.scan_stderr(sp, exclude=[".*warn.*", ".*WARN.*", ".*DEBUG.*"]) \
+				or not tc.scan_stderr(ssrv, exclude=[".*warn.*", ".*WARN.*", ".*DEBUG.*"]) \
+				or not tc.scan_stderr(sclt, exclude=[".*warn.*", ".*WARN.*", ".*DEBUG.*"]) \
 				or cur >= int(warmup + duration) * 2 \
 					:
 				break
@@ -201,34 +190,32 @@ def build_memparse(lat_arr, qps_arr):
 	return output
 
 def keep_results(output, sout, serr):
-	scpcmd = "scp " + master[0] + ":" + test_dir + "/" + sample_filename + " " + tc_get_odir() + "/sample.txt"
-	tc_log_print(scpcmd)
+	scpcmd = "scp " + master[0] + ":" + test_dir + "/" + sample_filename + " " + tc.get_odir() + "/sample.txt"
+	tc.log_print(scpcmd)
 	sp.check_call(scpcmd, shell=True)
 
 	# parse the output file for percentile and average load
-	f = open(tc_get_odir() + "/sample.txt", "r")
-	qps, lat = parse_file(f)
-	f.close()
+	qps, lat = mp.parse_mut_sample(tc.get_odir() + "/sample.txt")
 	avg_qps = np.mean(qps)
 	
 	output = build_memparse(lat, qps)
-	f = open(tc_get_odir() + "/l" + str(int(avg_qps)) + ".txt", "w")
+	f = open(tc.get_odir() + "/l" + str(int(avg_qps)) + ".txt", "w")
 	f.write(output)
 	f.close()
 
-	tc_log_print(output)
+	tc.log_print(output)
 
-	mvcmd = "mv " + tc_get_odir() + "/sample.txt " + tc_get_odir() + "/l" + str(int(avg_qps)) + ".sample"
-	tc_log_print(mvcmd)
+	mvcmd = "mv " + tc.get_odir() + "/sample.txt " + tc.get_odir() + "/l" + str(int(avg_qps)) + ".sample"
+	tc.log_print(mvcmd)
 	sp.check_call(mvcmd, shell=True)
 
 	if lockstat and len(serr) > 0:
-		f = open(tc_get_odir() + "/l" + str(int(avg_qps))  + ".lstat", "w")
+		f = open(tc.get_odir() + "/l" + str(int(avg_qps))  + ".lstat", "w")
 		f.write(serr)
 		f.close()
 	
 	if dump and len (sout) > 0:
-		f = open(tc_get_odir() + "/l" + str(int(avg_qps)) + ".kstat", "w")
+		f = open(tc.get_odir() + "/l" + str(int(avg_qps)) + ".kstat", "w")
 		f.write(sout)
 		f.close()
 
@@ -241,8 +228,9 @@ def main():
 	global dump
 	global lockstat
 	global client_only
+	global server_delay
 
-	options = getopt.getopt(sys.argv[1:], 'h:sldc')[0]
+	options = getopt.getopt(sys.argv[1:], 'h:sldcD')[0]
 	for opt, arg in options:
 		if opt in ('-h'):
 			hostfile = arg
@@ -255,20 +243,23 @@ def main():
 			dump=True
 		elif opt in ('-c'):
 			client_only=True
+		elif opt in ('-D'):
+			server_delay=True
 
-	tc_init(str(threads) + "+" + str(len(clients)) + "x" + str(client_threads) + "x" + str(conn_per_thread))
+	tc.init(str(threads) + "+" + str(len(clients)) + "x" + str(client_threads) + "x" + str(conn_per_thread))
 
-	tc_log_print("Configuration:\n" + \
+	tc.log_print("Configuration:\n" + \
 		  "Hostfile: " + ("None" if hostfile == None else hostfile) + "\n" \
 		  "Lockstat: " + str(lockstat) + "\n" \
 		  "KQ dump: " + str(dump) + "\n" \
-		  "Client only: " + str(client_only) + "\n")
+		  "Client only: " + str(client_only) + "\n"
+		  "Server delay: " + str(server_delay) + "\n")
 
 	if hostfile != None:
-		hosts = tc_parse_hostfile(hostfile)
-		server = tc_process_hostnames(server, hosts)
-		clients = tc_process_hostnames(clients, hosts)
-		master = tc_process_hostnames(master, hosts)
+		hosts = tc.parse_hostfile(hostfile)
+		server = tc.process_hostnames(server, hosts)
+		clients = tc.process_hostnames(clients, hosts)
+		master = tc.process_hostnames(master, hosts)
 
 	stop_all()
 
@@ -279,31 +270,31 @@ def main():
 		last_load = 0
 		cur_load = init_step
 
-		tc_begin(ename)
+		tc.begin(ename)
 
 		while True:
-			tc_log_print("============ Sched: " + str(ename) + " Flag: " + format(esched, '#04x') + " Load: " + str(cur_load) + " ============")
+			tc.log_print("============ Sched: " + str(ename) + " Flag: " + format(esched, '#04x') + " Load: " + str(cur_load) + " ============")
 
 			output, sout, serr = run_exp(esched, cur_load, lockstat)
 
 			qps = keep_results(output, sout, serr)
 			
 			pct = int((qps - last_load) / init_step * 100)
-			tc_log_print("last_load: " + str(last_load) + " this_load: " + str(qps) + " inc_pct: " + str(pct) + "%")
+			tc.log_print("last_load: " + str(last_load) + " this_load: " + str(qps) + " inc_pct: " + str(pct) + "%")
 
 			if pct <= term_pct:
-				tc_log_print("inc_pct less than TERM_PCT " + str(term_pct) + "%. Done.")
+				tc.log_print("inc_pct less than TERM_PCT " + str(term_pct) + "%. Done.")
 				break
 
 			if pct <= inc_pct:
 				step_mul += step_inc_pct
-				tc_log_print("inc_pct less than INC_PCT " + str(inc_pct) + "%. Increasing step multiplier to " + str(step_mul) + "%")
+				tc.log_print("inc_pct less than INC_PCT " + str(inc_pct) + "%. Increasing step multiplier to " + str(step_mul) + "%")
 
 			last_load = qps
 			cur_load += int(init_step * step_mul / 100)
-			tc_log_print("")
+			tc.log_print("")
 		
-		tc_end()
+		tc.end()
 
 	stop_all()
 

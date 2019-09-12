@@ -10,7 +10,7 @@ import re
 
 tc_logfile = None
 	
-def tc_log_print(info):
+def log_print(info):
 	print(info)
 	if tc_logfile != None:
 		tc_logfile.write(info + "\n")
@@ -20,45 +20,45 @@ tc_output_dir="results.d/"
 tc_cur_test = ""
 tc_test_id = 0
 
-def tc_init(id):
+def init(id):
 	global tc_output_dir
 	tc_output_dir = tc_output_dir + datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S') + "_" + id
 	os.system("mkdir -p " + tc_output_dir)
 	global tc_logfile
 	tc_logfile = open(tc_output_dir + "/log.txt", "w")
 
-def tc_begin(name):
+def begin(name):
 	global tc_test_id
 	global tc_cur_test
 	tc_cur_test = name
 	tc_test_id += 1
-	os.system("mkdir -p " + tc_get_odir())
-	tc_log_print("===== Test #" + str(tc_test_id) + " - " + tc_cur_test + " started =====")
+	os.system("mkdir -p " + get_odir())
+	log_print("\n===== Test #" + str(tc_test_id) + " - " + tc_cur_test + " started =====")
 
-def tc_end():
+def end():
 	global tc_cur_test
-	tc_log_print("===== Test #" + str(tc_test_id) + " - " + tc_cur_test + " completed =====")
+	log_print("\n===== Test #" + str(tc_test_id) + " - " + tc_cur_test + " completed =====")
 	tc_cur_test = None
 
-def tc_get_odir():
+def get_odir():
 	return tc_output_dir + "/" + tc_cur_test
 
 SCHED_QUEUE = 1
 SCHED_CPU = 2
 SCHED_BEST = 4
 SCHED_FEAT_WS = 1
-def tc_make_sched_flag(sched, args, feat = 0, fargs = 0):
+def make_sched_flag(sched, args, feat = 0, fargs = 0):
 	return (sched & 0xFF) | (args & 0xFF) << 8 | (feat & 0xFF) << 16 | (fargs & 0xFF) << 24
 
 TUNE_RTSHARE = 2
 TUNE_TFREQ = 1
-def tc_make_tune_flag(obj, val):
+def make_tune_flag(obj, val):
 	return (obj & 0xFFFF) | (val & 0xFFFF) << 16 
 
-def tc_get_username():
+def get_username():
     return pwd.getpwuid( os.getuid() )[0]
 
-def tc_remote_exec(srv, cmd, blocking=True, check=True):
+def remote_exec(srv, cmd, blocking=True, check=True):
 	sub = []
 	for s in srv:
 		p = sp.Popen(["ssh " + s + " \"" + cmd +"\""], shell=True, stdout=sp.PIPE, stderr=sp.PIPE)
@@ -72,7 +72,7 @@ def tc_remote_exec(srv, cmd, blocking=True, check=True):
 
 	return sub
 
-def tc_scan_stderr(cp, exclude = None):
+def scan_stderr(cp, exclude = None):
 	if cp == None:
 		return True
 
@@ -100,12 +100,12 @@ def tc_scan_stderr(cp, exclude = None):
 					if (exc != None) and (re.match(exc, line) != None):
 						return True
 			
-			tc_log_print("Error detected: proc idx - " + str(i) + " " + line)
+			log_print("Error detected: proc idx - " + str(i) + " " + line)
 			return False
 			
 	return True
 
-def tc_parse_hostfile(fp):
+def parse_hostfile(fp):
 	ret = {}
 	fh = open(fp, "r")
 	content = fh.readlines()
@@ -115,14 +115,18 @@ def tc_parse_hostfile(fp):
 		spl = line.split(" ")
 		if len(spl) >= 2:
 			ret[spl[0]] = spl[1]
-			tc_log_print("Parsed: hostname \"" + spl[0] + "\" -> \"" + spl[1] + "\"")
+			log_print("Parsed: hostname \"" + spl[0] + "\" -> \"" + spl[1] + "\"")
 	return ret
 
-def tc_process_hostnames(names, hosts):
+def process_hostnames(names, hosts):
 	ret = []
 	for line in names:
 		if hosts[line] != None:
 			ret.append(hosts[line])
 		else:
 			ret.append(line)
+	return ret
+
+def get_cpuset_core(threads):
+	ret = "cpuset -l 0-" + str(threads * 2 - 1) + " "
 	return ret
