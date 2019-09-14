@@ -430,6 +430,8 @@ struct settings {
     int evconf_flags;
     bool set_affinity;
     int kqdump_interval;
+    int priority_client;
+    char priority_ip[INET_ADDRSTRLEN + 1];
 #ifdef EXTSTORE
     unsigned int ext_item_size; /* minimum size of items to store externally */
     unsigned int ext_item_age; /* max age of tail item before storing ext. */
@@ -730,6 +732,9 @@ struct conn {
     ssize_t (*read)(conn  *c, void *buf, size_t count);
     ssize_t (*sendmsg)(conn *c, struct msghdr *msg, int flags);
     ssize_t (*write)(conn *c, void *buf, size_t count);
+
+    /* is */
+    int is_priority;
 };
 
 /* array of conn structures, indexed by file descriptor */

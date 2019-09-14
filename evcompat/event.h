@@ -37,6 +37,7 @@ struct event {
 #define EV_WRITE (0x2)
 #define EV_TIMEOUT (0x4)
 #define EV_PERSIST (0x8)
+#define EV_RUNTIME (0x16)
     short type;
     ev_fn fn;
     void *arg;

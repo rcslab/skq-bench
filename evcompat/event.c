@@ -92,6 +92,10 @@ init_kevent(struct kevent *kev, struct event *ev, int flags, const struct timeva
         return EINVAL;
     }
 
+    if ((ev->type & EV_RUNTIME) == EV_RUNTIME) {
+        flags |= EV_REALTIME;
+    }
+
     EV_SET(kev, ev->fd, filter, flags, fflags, data, ev);
     return 0;
 }

@@ -42,6 +42,7 @@ struct option {
 	int client_mode;
 
 	char server_ip[33];
+	char generator_name[129];
 	int server_port;
 	int depth_limit = 1;
 
@@ -58,13 +59,14 @@ static struct option options = {.verbose = 0,
 						 .master_thread_count = -1,
 						 .client_conn = 1,
 						 .master_conn = -1,
-						 .target_qps = 1,
+						 .target_qps = 0,
 						 .master_qps = -1,
 						 .client_mode = 0,
 						 .master_mode = 0,
 						 .warmup = 0,
 						 .duration = 10,
-						 .server_port = DEFAULT_SERVER_CLIENT_CONN_PORT};
+						 .server_port = DEFAULT_SERVER_CLIENT_CONN_PORT,
+						 .generator_name = {0}};
 
 /* client server stuff */
 static vector<char *> client_ips;
@@ -286,7 +288,10 @@ worker_thread(int id, int notif_pipe, vector<struct datapt*> *data)
 			english->timer_expired = 0;
 			english->state = STATE_WAITING;
 			english->stats = data;
-			english->gen = createFacebookIA();
+			english->gen = createGenerator(options.generator_name);
+			if (english->gen == NULL) {
+				E("Unknown generator \"%s\"\n", options.generator_name);
+			}
 			english->gen->set_lambda((double)options.target_qps / (double)(options.client_thread_count * options.client_conn));
 
 			EV_SET(&ev[0], english->conn_fd, EVFILT_READ, EV_ADD, 0, 0, english);
@@ -589,7 +594,8 @@ void dump_options()
 			"        client_mode: %d\n"
 			"        output_file: %s\n"
 			"        server_ip: %s\n"
-			"        server_port: %d\n",
+			"        server_port: %d\n"
+			"        IA_DIST: %s\n",
 			options.client_conn,
 			options.client_thread_count,
 			options.target_qps,
@@ -599,7 +605,8 @@ void dump_options()
 			options.client_mode,
 			options.output_name,
 			options.server_ip,
-			options.server_port);
+			options.server_port,
+			options.generator_name);
 	}
 }
 
@@ -615,7 +622,8 @@ static void usage()
 					"    -h: show help.\n"
 					"    -v: verbose mode.\n"
 					"    -W: warm up time.\n"
-					"    -w: test duration.\n\n"
+					"    -w: test duration.\n"
+					"    -i: interarrival distribution. See mutilate.\n\n"
 					"Master mode:\n"
 					"    -a: client addr.\n"
 					"    -A: client mode.\n"
@@ -637,10 +645,13 @@ static void usage()
 int
 main(int argc, char* argv[]) 
 {
+	/* set default values */
+	strncpy(options.generator_name, "fb_ia" , 128);
+	strncpy(options.server_ip, "127.0.0.1" , 32);
 	int ch;
 	FILE *resp_fp_csv;
 
-	while ((ch = getopt(argc, argv, "q:s:C:p:o:t:c:hvW:w:T:Aa:Q:")) != -1) {
+	while ((ch = getopt(argc, argv, "q:s:C:p:o:t:c:hvW:w:T:Aa:Q:i:")) != -1) {
 		switch (ch) {
 			case 'q':
 				options.target_qps = atoi(optarg);
@@ -657,7 +668,6 @@ main(int argc, char* argv[])
 			case 's': {
 				string ip = get_ip_from_hostname(optarg);
 				strncpy(options.server_ip, ip.c_str(), 32);
-				options.server_ip[32] = 0;
 				break;
 			}
 			case 'p':
@@ -699,8 +709,7 @@ main(int argc, char* argv[])
 				exit(0);
 			case 'v':
 				options.verbose = 1;
-				W("Verbose mode can cause SUBSTANTIAL latency fluctuations in some terminals! The program will continue in 3 seconds.\n");
-				sleep(3);
+				W("Verbose mode can cause SUBSTANTIAL latency fluctuations in some(XFCE) terminals!\n");
 				break;
 			case 'a': {
 				if (options.client_mode == 1) {
@@ -709,7 +718,6 @@ main(int argc, char* argv[])
 				string ip = get_ip_from_hostname(optarg);
 				char *rip = new char[33];
 				strncpy(rip, ip.c_str(), 32);
-				rip[33] = 0;
 				client_ips.push_back(rip);
 				options.master_mode = 1;
 				break;
@@ -731,6 +739,10 @@ main(int argc, char* argv[])
 					E("Cannot be both master and client\n");
 				}
 				options.client_mode = 1;
+				break;
+			}
+			case 'i': {
+				strncpy(options.generator_name, optarg, 128);
 				break;
 			}
 			default:

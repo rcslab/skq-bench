@@ -27,20 +27,16 @@ sample_filename = "sample.txt"
 
 sched = [
 	"vanilla", -1,
+	"queue0", tc.make_sched_flag(tc.SCHED_QUEUE, 0),
+    "queue2", tc.make_sched_flag(tc.SCHED_QUEUE, 2),
 	"cpu0", tc.make_sched_flag(tc.SCHED_CPU, 0),
+	"cpu2", tc.make_sched_flag(tc.SCHED_CPU, 2),
 	"best2", tc.make_sched_flag(tc.SCHED_BEST, 2),
 	"best2_ws", tc.make_sched_flag(tc.SCHED_BEST, 2, feat=tc.SCHED_FEAT_WS, fargs=1),
-	"queue0", tc.make_sched_flag(tc.SCHED_QUEUE, 0),
-	"queue1", tc.make_sched_flag(tc.SCHED_QUEUE, 1),
-    "queue2", tc.make_sched_flag(tc.SCHED_QUEUE, 2),
 	"q0_ws", tc.make_sched_flag(tc.SCHED_QUEUE, 0, feat=tc.SCHED_FEAT_WS, fargs=1),
-	"q1_ws", tc.make_sched_flag(tc.SCHED_QUEUE, 1, feat=tc.SCHED_FEAT_WS, fargs=1),
 	"q2_ws", tc.make_sched_flag(tc.SCHED_QUEUE, 2, feat=tc.SCHED_FEAT_WS, fargs=1),
 	"cpu0_ws", tc.make_sched_flag(tc.SCHED_CPU, 0, feat=tc.SCHED_FEAT_WS, fargs=1),
-    "cpu1_ws", tc.make_sched_flag(tc.SCHED_CPU, 1, feat=tc.SCHED_FEAT_WS, fargs=1),
     "cpu2_ws", tc.make_sched_flag(tc.SCHED_CPU, 2, feat=tc.SCHED_FEAT_WS, fargs=1),
-	"cpu1", tc.make_sched_flag(tc.SCHED_CPU, 1),
-	"cpu2", tc.make_sched_flag(tc.SCHED_CPU, 2),
 ]
 
 master = ["skylake2"]
@@ -54,6 +50,7 @@ duration = 10
 cooldown = 0
 conn_per_thread = 12
 server_delay = False
+conn_delay = True
 
 
 hostfile = None
@@ -92,6 +89,9 @@ def run_exp(sc, ld, lstat):
 
 			if server_delay:
 				server_cmd += " -D "
+
+			if conn_delay:
+				server_cmd += " -c "
 			
 			if lstat:
 				server_cmd = "sudo lockstat -A -P -s4 -n16777216 " + server_cmd
@@ -125,7 +125,8 @@ def run_exp(sc, ld, lstat):
 							  " -C 1 " + \
 							  " -Q 1000 " + \
 							  " -w " + str(duration) + \
-							  " -W " + str(warmup)
+							  " -W " + str(warmup) + \
+							  " -i exponential "
 
 		tc.log_print(master_cmd)
 		sp = tc.remote_exec(master, master_cmd, blocking=False)
@@ -252,8 +253,9 @@ def main():
 		  "Hostfile: " + ("None" if hostfile == None else hostfile) + "\n" \
 		  "Lockstat: " + str(lockstat) + "\n" \
 		  "KQ dump: " + str(dump) + "\n" \
-		  "Client only: " + str(client_only) + "\n"
-		  "Server delay: " + str(server_delay) + "\n")
+		  "Client only: " + str(client_only) + "\n" + \
+		  "Server delay: " + str(server_delay) + "\n" + \
+		  "Conn delay: " + str(conn_delay) + "\n")
 
 	if hostfile != None:
 		hosts = tc.parse_hostfile(hostfile)

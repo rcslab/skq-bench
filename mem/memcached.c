@@ -319,6 +319,7 @@ static void settings_init(void) {
     settings.evconf_flags = 0;
     settings.set_affinity = false;
     settings.kqdump_interval = -1;
+    settings.priority_client = 0;
 #ifdef MEMCACHED_DEBUG
     settings.relaxed_privileges = false;
 #endif
@@ -5413,13 +5414,16 @@ static enum try_read_result try_read_network(conn *c) {
     return gotdata;
 }
 
-static bool update_event(conn *c, const int new_flags) {
+static bool update_event(conn *c, int new_flags) {
     assert(c != NULL);
 
     struct event_base *base = c->event.ev_base;
     if (c->ev_flags == new_flags)
         return true;
     if (event_del(&c->event) == -1) return false;
+    if (c->is_priority) {
+        new_flags |= EV_RUNTIME;
+    }
     event_set(&c->event, c->sfd, new_flags, event_handler, (void *)c);
     event_base_set(base, &c->event);
     c->ev_flags = new_flags;
@@ -6249,6 +6253,7 @@ static int server_socket(const char *interface,
                 dispatch_conn_new(per_thread_fd, conn_read,
                                   EV_READ | EV_PERSIST,
                                   UDP_READ_BUFFER_SIZE, transport, NULL);
+
             }
         } else {
             if (!(listen_conn_add = conn_new(sfd, conn_listening,
@@ -6907,6 +6912,24 @@ static bool _parse_slab_sizes(char *s, uint32_t *slab_sizes) {
     return true;
 }
 
+static void
+get_ip_from_hostname(const char* hostname, char* buf, int len) 
+{
+  struct in_addr **addr;
+  struct hostent *he;
+
+  if ((he = gethostbyname(hostname)) == NULL) {
+    fprintf(stderr, "Hostname %s cannot be resolved.\n", hostname);
+    exit(1);
+  }
+  addr = (struct in_addr**)he->h_addr_list;
+  for (int i=0;addr[i]!=NULL;i++) {
+    strncpy(buf, inet_ntoa(*addr[i]), len);
+    break;
+  }
+}
+
+
 int main (int argc, char **argv) {
     int c;
     bool lock_memory = false;
@@ -7146,6 +7169,7 @@ int main (int argc, char **argv) {
           "q:" /* evconf flags */
           "e" /* affinity */
           "j:" /* kqueue dump interval */
+          "J:" /* priority clients */
           ;
 
     /* process arguments */
@@ -7187,6 +7211,7 @@ int main (int argc, char **argv) {
         {"event-flags", required_argument, 0, 'q'},
         {"set-affinity", no_argument, 0, 'e'},
         {"dump-interval", required_argument, 0, 'j'},
+        {"priority-client", required_argument, 0, 'J'},
         {0, 0, 0, 0}
     };
     int optindex;
@@ -7298,6 +7323,11 @@ int main (int argc, char **argv) {
         case 'j':
             settings.kqdump_interval = atoi(optarg);
             break;
+        case 'J': {
+            settings.priority_client++;
+            get_ip_from_hostname(optarg, settings.priority_ip, INET_ADDRSTRLEN);
+			break;
+        }
         case 'f':
             settings.factor = atof(optarg);
             if (settings.factor <= 1.0) {

@@ -34,6 +34,11 @@ struct server_option {
 	int skq_dump;
 	int verbose;
 	int delay;
+	int conn_delay;
+};
+
+struct conn_hint {
+	int delay;
 };
 
 struct worker_thread {
@@ -51,7 +56,8 @@ struct server_option options = {.threads = 1,
 								.cpu_affinity = 0,
 								.skq_dump = 0,
 								.verbose = 0,
-								.delay = 0};
+								.delay = 0,
+								.conn_delay = 0};
 
 static long perf_sample[1000] = {0};
 static volatile long perf_avg;
@@ -108,9 +114,10 @@ server_socket_prepare(vector<int> *socks)
 }
 
 static void
-drop_conn(struct worker_thread *tinfo, int conn_fd)
+drop_conn(struct worker_thread *tinfo, struct kevent *kev)
 {
 	int status;
+	int conn_fd = kev->ident;
 	struct kevent ev;
 	EV_SET(&ev, conn_fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
 	
@@ -121,6 +128,24 @@ drop_conn(struct worker_thread *tinfo, int conn_fd)
 	}
 
 	close(conn_fd);
+
+	free(kev->udata);
+}
+
+static void
+build_delay_table(vector<int> *tbl)
+{
+	/* 95 + 4 + 1 = 100 */
+
+	tbl->push_back(200);
+
+	for(int i = 0; i < 4; i++) {
+		tbl->push_back(50);
+	}
+
+	for(int i = 0; i < 95; i++) {
+		tbl->push_back(20);
+	}
 }
 
 #define RM (1000)
@@ -155,7 +180,7 @@ handle_event(struct worker_thread *tinfo, struct kevent* kev)
 
 	if (kev->flags & EV_EOF) {
 		V("Connection %d dropped due to EOF. ERR: %d\n", conn_fd, kev->fflags);
-		drop_conn(tinfo, conn_fd);
+		drop_conn(tinfo, kev);
 		return;
 	}
 
@@ -163,7 +188,7 @@ handle_event(struct worker_thread *tinfo, struct kevent* kev)
 
 	if (status < 0) {
 		W("Connection %d dropped due to readbuf. ERR: %d\n", conn_fd, errno);
-		drop_conn(tinfo, conn_fd);
+		drop_conn(tinfo, kev);
 		return;
 	}
 
@@ -178,14 +203,18 @@ handle_event(struct worker_thread *tinfo, struct kevent* kev)
 
 		if (status < 0) {
 			W("Connection %d dropped due to writebuf. ERR: %d\n", conn_fd, errno);
-			drop_conn(tinfo, conn_fd);
+			drop_conn(tinfo, kev);
 		}
 
+		int server_delay = 0;
+		int now = get_time_us();
 		if (options.delay) {
-			int server_delay = get_next_delay();
-			int now = get_time_us();
-			while (get_time_us() - now <= (uint64_t)server_delay) {};
+			server_delay = get_next_delay();
+		} else if (options.conn_delay) {
+			server_delay = ((struct conn_hint*)(kev->udata))->delay;
 		}
+
+		while (get_time_us() - now <= (uint64_t)server_delay) {};
 
 	} else if (memcmp(data, IGNORE_STRING, MESSAGE_LENGTH) == 0){
 		/* do nothing */
@@ -195,7 +224,7 @@ handle_event(struct worker_thread *tinfo, struct kevent* kev)
 
 		if (status < 0) {
 			W("Connection %d dropped due to writebuf. ERR: %d\n", conn_fd, errno);
-			drop_conn(tinfo, conn_fd);
+			drop_conn(tinfo, kev);
 		}
 	}
 
@@ -236,7 +265,8 @@ usage()
 		   "    d: SKQ dump interval (s)\n"
 		   "    t: number of server threads\n"
 		   "    h: show help\n"
-		   "    D: enable simulated delay\n");
+		   "    D: enable simulated delay, overwrites -c\n"
+		   "    c: enable per-connection delay\n");
 }
 
 static int
@@ -349,7 +379,7 @@ main(int argc, char *argv[])
 	vector<struct worker_thread *> wrk_thrds;
     vector<int> server_socks;
 	
-	while ((ch = getopt(argc, argv, "Dd:p:at:m:vh")) != -1) {
+	while ((ch = getopt(argc, argv, "Dd:p:at:m:vhc")) != -1) {
 		switch (ch) {
 			case 'D':
 				options.delay = 1;
@@ -372,8 +402,10 @@ main(int argc, char *argv[])
 				break;
 			case 'v':
 				options.verbose = 1;
-				W("Verbose mode can cause SUBSTANTIAL latency fluctuations in some terminals! The program will continue in 3 seconds.\n");
-				sleep(3);
+				W("Verbose mode can cause SUBSTANTIAL latency fluctuations in some terminals!\n");
+				break;
+			case 'c':
+				options.conn_delay = 1;
 				break;
 			case 'h':
 			case '?':
@@ -417,6 +449,15 @@ main(int argc, char *argv[])
 			E("ioctl failed. ERR %d\n", errno);
 		}
 		V("SKQ enabled: %d\n", options.skq_flag);
+	}
+
+	/* delay distribution table */
+	vector<int> dist_table;
+	int dist_table_idx = 0;
+
+	if (options.conn_delay) {
+		V("Building delay distribution table...\n");
+		build_delay_table(&dist_table);
 	}
 
 	srand(time(NULL));
@@ -473,7 +514,15 @@ main(int argc, char *argv[])
 
 			int target_kq = wrk_thrds.at(cur_thread)->kqfd;
 
-			EV_SET(&kev, conn_fd, EVFILT_READ, EV_ADD, 0, 0, NULL);
+			struct conn_hint *hint = new struct conn_hint;
+
+			if (options.conn_delay) {
+				hint->delay = dist_table[dist_table_idx % dist_table.size()];
+				dist_table_idx++;
+				V("Assigned connection %d delay %d us\n", conn_fd, hint->delay);
+			}
+
+			EV_SET(&kev, conn_fd, EVFILT_READ, EV_ADD, 0, 0, hint);
 			status = kevent(target_kq, &kev, 1, NULL, 0, NULL);
 
 			if (status == -1) {

@@ -17,8 +17,8 @@
 #define MSG_TEST_STOP (0x3456)
 
 #ifndef FKQMULTI
-#define FKQMULTI (-1)
-#define FKQMPRNT (-1)
+#define FKQMULTI (0)
+#define FKQMPRNT (0)
 #endif
 
 /* XXX: */

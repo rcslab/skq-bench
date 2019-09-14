@@ -20,9 +20,9 @@ root_dir = file_dir + "/../../"
 sample_filename = "sample.txt"
 
 sched = [
-	"vanilla", -1,
 	"cpu0", tc.make_sched_flag(tc.SCHED_CPU, 0),
 	"best2", tc.make_sched_flag(tc.SCHED_BEST, 2),
+	"vanilla", -1,
 	"best2_ws", tc.make_sched_flag(tc.SCHED_BEST, 2, feat=tc.SCHED_FEAT_WS, fargs=1),
 	"queue0", tc.make_sched_flag(tc.SCHED_QUEUE, 0),
 	"queue1", tc.make_sched_flag(tc.SCHED_QUEUE, 1),
@@ -47,9 +47,9 @@ init_step = 100000
 term_pct = 5
 inc_pct = 50
 
-master = ["skylake2"]
+master = ["skylake3"]
 server = ["skylake1"]
-clients = ["skylake3", "skylake4", "skylake5", "skylake6", "skylake7", "skylake8"]
+clients = ["skylake4", "skylake5", "skylake6", "skylake7", "skylake8"]
 
 threads = 12
 client_threads = 12
@@ -76,7 +76,7 @@ def stop_all():
 	if not client_only:
 		# stop server
 		tc.log_print("Stopping server...")
-		tc.remote_exec(server, "killall -9 memcached; sudo killall -9 lockstat", check=False)
+		tc.remote_exec(server, "killall -9 memcached", check=False)
 
 	# stop master
 	tc.log_print("Stopping master...")
@@ -102,7 +102,7 @@ def run_exp(sc, ld, lstat):
 				server_cmd = test_dir + "/mem/memcached -e -m 1024 -c 65536 -b 4096 -t " + str(threads) + " -q " + str(sc) + (" -j 1 " if dump else "")
 
 			if lstat:
-				server_cmd = "sudo lockstat -A -P -s4 -n16777216 " + server_cmd + " -u " + tc.get_username()
+				server_cmd = "sudo lockstat -A -P -s16 -n16777216 " + server_cmd + " -u " + tc.get_username()
 
 			tc.log_print(server_cmd)
 			ssrv = tc.remote_exec(server, server_cmd, blocking=False)
@@ -137,7 +137,7 @@ def run_exp(sc, ld, lstat):
 			if False \
 				or not tc.scan_stderr(ssrv, exclude=[".*warn.*", ".*DEBUG.*"]) \
 				or not tc.scan_stderr(sclt) \
-				or cur >= int(warmup + duration) * 2 \
+				or cur >= int(warmup + duration) * 3 \
 				or not tc.scan_stderr(sp, exclude=[".*mutex.hpp.*"]) \
 					:
 				break
@@ -175,9 +175,9 @@ def keep_results(ld, output, sout, serr):
 	tc.log_print(scpcmd)
 	sp.check_call(scpcmd, shell=True)
 
-	if lockstat and len(serr) > 0:
+	if lockstat and len(sout) > 0:
 		f = open(tc.get_odir() + "/l" + ld  + (".lstat" if lockstat else ".truss"), "w")
-		f.write(serr)
+		f.write(sout)
 		f.close()
 	
 	if dump and len (sout) > 0:

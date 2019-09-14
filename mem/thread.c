@@ -20,6 +20,9 @@
 #include <sys/sysctl.h>
 #include <pthread_np.h>
 
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
 #ifdef __sun
 #include <atomic.h>
 #endif
@@ -40,6 +43,7 @@ struct conn_queue_item {
     int               sfd;
     enum conn_states  init_state;
     int               event_flags;
+    int               is_priority;
     int               read_buffer_size;
     enum network_transport     transport;
     enum conn_queue_item_modes mode;
@@ -561,6 +565,31 @@ void dispatch_conn_new(int sfd, enum conn_states init_state, int event_flags,
         return ;
     }
 
+
+    item->is_priority = 0;
+
+    if (settings.priority_client > 0) {
+        /* obtain the ip address */
+        struct sockaddr_in client_addr;
+        socklen_t client_addr_size = sizeof(client_addr);
+        if (getpeername(sfd, (struct sockaddr*)&client_addr, &client_addr_size) == -1) {
+            close(sfd);
+            fprintf(stderr, "Failed to obtain ip address from connection %d\n", sfd);
+            return;
+        }
+        char ipaddr[INET_ADDRSTRLEN + 1];
+        strncpy(ipaddr, inet_ntoa(client_addr.sin_addr), INET_ADDRSTRLEN);
+        ipaddr[INET_ADDRSTRLEN] = 0;
+
+        if (strcmp(ipaddr, settings.priority_ip) == 0) {
+            item->is_priority = 1;
+            item->event_flags |= EV_RUNTIME;
+            if (settings.verbose) {
+                fprintf(stdout, "Connection %d from ip %s has high priority\n", sfd, ipaddr);
+            }
+        }
+    }
+
     int tid = (last_thread + 1) % settings.num_threads;
 
     struct thrd_notif_pipe *pipe = &g_pipes[tid];
@@ -603,6 +632,10 @@ void redispatch_conn(conn *c) {
     struct thrd_notif_pipe *pipe = &g_pipes[tid];
 
     last_thread = tid;
+
+    if (item->is_priority) {
+        item->event_flags |= EV_RUNTIME;
+    }
 
     item->sfd = c->sfd;
     item->init_state = conn_new_cmd;

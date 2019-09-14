@@ -10,6 +10,7 @@
     #define FKQMULTI (0)
     #define MULT_KQ (0) 
     #define FKQMPRNT (0)
+    #define EV_REALTIME (0)
 #endif
 
 #define UNUSED(x) (void)(x)
