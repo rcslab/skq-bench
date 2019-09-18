@@ -335,6 +335,20 @@ create_workers(int kq, vector<struct worker_thread*> *thrds)
 			if (kq <= 0) {
 				E("Cannot create kqueue\n");
 			}
+
+			int para = KQTUNE_MAKE(KQTUNE_RTSHARE, options.kq_rtshare);
+			status = ioctl(kq, FKQTUNE, &para);
+			if (status == -1) {
+				E("rtshare ioctl failed. ERR %d\n", errno);
+			}
+
+			para = KQTUNE_MAKE(KQTUNE_FREQ, options.kq_tfreq);
+			status = ioctl(kq, FKQTUNE, &para);
+			if (status == -1) {
+				E("freq ioctl failed. ERR %d\n", errno);
+			}
+
+			V("KQ created. RTSHARE %d TFREQ %d\n", options.kq_rtshare, options.kq_tfreq);
 		}
 
 		thrd->kqfd = kq;
