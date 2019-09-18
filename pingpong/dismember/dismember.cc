@@ -281,9 +281,6 @@ worker_thread(int id, int notif_pipe, vector<struct datapt*> *data)
 			if (connect(conn_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) != 0) {
 				E("Connection %d connect() failed. Dropping. Err: %d\n", conn_fd, errno);
 			}
-			if (writebuf(conn_fd, IGNORE_STRING, MESSAGE_LENGTH) < 0) {
-				E("Connection %d handshake failed. Dropping. Err: %d\n", conn_fd, errno);
-			}
 
 			struct kqconn* english = new struct kqconn;
 
@@ -467,6 +464,7 @@ static void wait_clients_ok()
 		acked.insert(kev.ident);
 	}
 
+	sleep(1);
 	/* start all clients */
 	msg = MSG_TEST_START;
 	for (uint32_t i = 0; i < client_fds.size(); i++) {
