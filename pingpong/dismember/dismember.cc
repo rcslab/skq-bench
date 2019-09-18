@@ -55,7 +55,16 @@ struct option {
 	int duration;
 };
 
-static const char * DEFAULT_OUTPUT = "output.sample";
+#define DEFAULT_OUTPUT ("output.sample")
+
+struct perf_counter {
+	char pad1[64];
+	int cnt; 
+	char pad2[64];
+};
+
+vector<struct perf_counter*> thrd_perf_counters;
+
 
 static struct option options = {.verbose = 0,
 						 .depth_limit = 1,
@@ -200,16 +209,21 @@ void kqconn_state_machine(struct kqconn *conn)
 	}
 }
 
-void ev_loop(struct kevent *ev, struct kqconn *conn)
+void ev_loop(int id, struct kevent *ev, struct kqconn *conn)
 {
 	int status;
-	long q;
+	char data[MESSAGE_LENGTH + 1];
 
 	if ((int)ev->ident == conn->conn_fd) {
 		/* we got something to read */
-		status = readbuf(conn->conn_fd, &q, sizeof(long));
+		status = readbuf(conn->conn_fd, &data, MESSAGE_LENGTH);
 		if (status < 0) {
 			E("Connection %d readbuf failed. ERR: %d\n", conn->conn_fd, errno);
+		}
+
+		if (memcmp(options.master_mode ? NODELAY_STRING : DISMEM_STRING, data, MESSAGE_LENGTH) != 0) {
+			data[MESSAGE_LENGTH] = 0;
+			E("Connection %d received invalid response %s", conn->conn_fd, data);
 		}
 
 		conn->depth--;
@@ -217,13 +231,15 @@ void ev_loop(struct kevent *ev, struct kqconn *conn)
 			E("More recved packets than sent.\n");
 		}
 		
-
-		if (!options.client_mode && (long)cur_time > options.warmup) {
-			struct datapt* dat = new struct datapt;
-			dat->qps = q;
-			dat->lat = get_time_us() - conn->last_send;
-			conn->stats->push_back(dat);
-			V("Conn %d: TS: %d LAT: %ld, QPS: %ld\n", conn->conn_fd, (int)cur_time, dat->lat, (long)dat->qps);
+		if ((long)cur_time >= options.warmup) {
+			thrd_perf_counters[id]->cnt++;
+			if (!options.client_mode) {
+				struct datapt* dat = new struct datapt;
+				dat->qps = 0;
+				dat->lat = get_time_us() - conn->last_send;
+				conn->stats->push_back(dat);
+				V("Conn %d: TS: %d LAT: %ld, QPS: %ld\n", conn->conn_fd, (int)cur_time, dat->lat, (long)dat->qps);
+			}
 		}
 
 		kqconn_state_machine(conn);		
@@ -344,7 +360,7 @@ worker_thread(int id, int notif_pipe, vector<struct datapt*> *data)
 					break;
 			}
 
-			ev_loop(&ev, conn);
+			ev_loop(id, &ev, conn);
 		} else {
 			E("Thread %d kevent failed. ERR %d\n", id, errno);
 		}
@@ -359,9 +375,49 @@ worker_thread(int id, int notif_pipe, vector<struct datapt*> *data)
 	V("Thread %d exiting...\n", id);
 }
 
-void 
+int
+master_recv_qps()
+{
+	int qps = 0;
+	int tot = 0;
+	struct kevent kev;
+
+	while(tot < options.client_num) {
+
+		if (kevent(mt_kq, NULL, 0, &kev, 1, NULL) != 1) {
+			E("Error recving qps. ERR %d\n", errno);
+		}
+
+		if (kev.flags & EV_EOF) {
+			continue;
+		}
+
+		int msg;
+
+		if (readbuf(kev.ident, &msg, sizeof(int)) == -1) {
+			E("Failed to read from master_fd or message invalid. ERR %d\n", errno);
+		}
+
+		qps += msg;
+
+		V("Received QPS %d from client %d\n", msg, (int)kev.ident);
+
+		msg = MSG_TEST_QPS_ACK;
+		if (writebuf(kev.ident, &msg, sizeof(int)) == -1) {
+			E("Failed to send ACK to client %d. ERR %d\n", (int)kev.ident, errno);
+		}
+
+		V("Sent ACK to client %d\n", (int)kev.ident);
+		tot++;
+	}
+
+	return qps;
+}
+
+int 
 client_stop()
 {
+	int qps;
 	int msg = MSG_TEST_STOP;
 	int stop_cnt = 0;
 	struct kevent kev;
@@ -372,6 +428,9 @@ client_stop()
 			E("Failed to send client STOP. ERR %d\n", errno);
 		}
 	}
+
+	V("Waiting for client QPS...\n");
+	qps = master_recv_qps();
 
 	V("Waiting for client connections to close.\n");
 	while (stop_cnt < (int)client_fds.size()) {
@@ -389,6 +448,8 @@ client_stop()
 	for (uint32_t i = 0; i < client_ips.size(); i++) {
 		delete[] client_ips.at(i);
 	}
+
+	return qps;
 }
 
 static std::string 
@@ -527,6 +588,32 @@ static void prepare_clients()
 	options.client_conn = real_conn;
 	options.client_thread_count = real_thread;
 	options.target_qps = real_qps;
+}
+
+static void client_send_qps(int qps)
+{
+	struct kevent kev;
+	int msg = 0;
+
+	/* clients need to send qps */
+	V("Sending master QPS %d\n", qps);
+	if (writebuf(master_fd, &qps, sizeof(int)) < 0) {
+		E("Error writing QPS to master\n");
+	}
+
+	V("Waiting for master ACK...\n");
+
+	if (kevent(mt_kq, NULL, 0, &kev, 1, NULL) != 1) {
+		E("kevent wait for master ack %d\n", errno);
+	}
+
+	if (readbuf((int)kev.ident, &msg, sizeof(int)) < 0) {
+		E("Failed to receive ack from master\n");
+	}
+
+	if (msg != MSG_TEST_QPS_ACK) {
+		E("Invalid ack message\n");
+	}
 }
 
 static void wait_master_prepare()
@@ -816,8 +903,13 @@ main(int argc, char* argv[])
 		if (pipe(&pipes[0]) == -1) {
 			E("Cannot create pipes. ERR %d\n", errno);
 		}
+
+		struct perf_counter *perf = new struct perf_counter;
+		perf->cnt = 0;
 		send_pipes[i] = pipes[0];
 		recv_pipes[i] = pipes[1];
+	
+		thrd_perf_counters.push_back(perf);
 		threads.push_back(thread(worker_thread, i, pipes[1], &data[i]));
 	}
 
@@ -881,6 +973,18 @@ main(int argc, char* argv[])
 		}
 	}
 
+	int qps = 0;
+
+	for(int i = 0; i < options.client_thread_count; i++) {
+		qps += thrd_perf_counters[i]->cnt;
+	}
+	V("Local QPS: %d\n", qps);
+
+	if (options.client_mode) {
+		client_send_qps(qps);
+		close(master_fd);
+	}
+
 	V("Signaling threads to exit...\n");
 	for (int i = 0; i < options.client_thread_count; i++) {
 		if (write(send_pipes[i], "e", sizeof(char)) == -1) {
@@ -890,14 +994,18 @@ main(int argc, char* argv[])
 
 	for (int i = 0; i < options.client_thread_count; i++) {
 		threads.at(i).join();
+		delete thrd_perf_counters[i];
 		close(send_pipes[i]);
 		close(recv_pipes[i]);
 	}
 
-	if (options.master_mode == 1) {
+	if (options.master_mode) {
 		V("Shutting down clients...\n");
-		client_stop();
+		qps += client_stop();
 	}
+
+	V("Aggreated QPS %d over %d seconds\n", qps, options.duration);
+	qps = qps / (options.duration);
 
 	if (!options.client_mode) {
 		/* stop the measurement */
@@ -905,7 +1013,7 @@ main(int argc, char* argv[])
 		for (int i = 0; i < options.client_thread_count; i++) {
 			for (uint32_t j = 0; j < data[i].size(); j++) {
 				struct datapt *pt = data[i].at(j);
-				fprintf(resp_fp_csv, "%ld %ld\n", pt->qps, pt->lat);
+				fprintf(resp_fp_csv, "%d %ld\n", qps, pt->lat);
 				delete pt;
 			}
 		}
@@ -919,4 +1027,3 @@ main(int argc, char* argv[])
 	
 	return 0;
 }
-

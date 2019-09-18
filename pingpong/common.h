@@ -15,16 +15,7 @@
 #define MSG_TEST_OK (0x1234)
 #define MSG_TEST_START (0x2345)
 #define MSG_TEST_STOP (0x3456)
-
-#ifndef FKQMULTI
-#define FKQMULTI (0)
-#define FKQMPRNT (0)
-#define FKQTUNE (0)
-#define EV_REALTIME (0)
-#define KQTUNE_MAKE(obj, val) (0)
-#define KQTUNE_FREQ (0)
-#define KQTUNE_RTSHARE (0)
-#endif
+#define MSG_TEST_QPS_ACK (0x4567)
 
 /* XXX: */
 #define NODELAY_STRING ("NODELAYNO")

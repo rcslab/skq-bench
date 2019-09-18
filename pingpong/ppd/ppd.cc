@@ -26,6 +26,7 @@ using namespace std;
 
 #define NEVENT (256)
 #define SOCK_BACKLOG (10000)
+#define SINGLE_LEGACY (-1)
 
 struct server_option {
 	int threads;
@@ -56,7 +57,7 @@ struct worker_thread {
 
 struct server_option options = {.threads = 1, 
 								.port = DEFAULT_SERVER_CLIENT_CONN_PORT, 
-								.skq = 0, 
+								.skq = 0,
 								.skq_flag = 0, 
 								.cpu_affinity = 0,
 								.skq_dump = 0,
@@ -65,9 +66,6 @@ struct server_option options = {.threads = 1,
 								.conn_delay = 0,
 								.kq_rtshare = 100,
 								.kq_tfreq = 0};
-
-static long perf_sample[1000] = {0};
-static volatile long perf_avg;
 
 /* XXX: legacy BS */
 static const int enable = 1;
@@ -172,7 +170,7 @@ get_next_delay()
 	}
 }
 
-static void
+static int
 handle_event(struct worker_thread *tinfo, struct kevent* kev)
 {
 	int conn_fd;
@@ -188,7 +186,7 @@ handle_event(struct worker_thread *tinfo, struct kevent* kev)
 	if (kev->flags & EV_EOF) {
 		V("Connection %d dropped due to EOF. ERR: %d\n", conn_fd, kev->fflags);
 		drop_conn(tinfo, kev);
-		return;
+		return ECONNRESET;
 	}
 
 	status = readbuf(conn_fd, data, MESSAGE_LENGTH);
@@ -196,7 +194,7 @@ handle_event(struct worker_thread *tinfo, struct kevent* kev)
 	if (status < 0) {
 		W("Connection %d dropped due to readbuf. ERR: %d\n", conn_fd, errno);
 		drop_conn(tinfo, kev);
-		return;
+		return ECONNRESET;
 	}
 
 	
@@ -215,19 +213,17 @@ handle_event(struct worker_thread *tinfo, struct kevent* kev)
 
 			while (get_time_us() - now <= (uint64_t)server_delay) {};
 		}
-		
-		V("Connection %d asked for QPS - %ld\n", conn_fd, 0l);
 
-		status = writebuf(conn_fd, (void*)&perf_avg, sizeof(long));
+		status = writebuf(conn_fd, data, MESSAGE_LENGTH);
 
 		if (status < 0) {
 			W("Connection %d dropped due to writebuf. ERR: %d\n", conn_fd, errno);
 			drop_conn(tinfo, kev);
 		}
-
 	}
 
 	tinfo->evcnt++;
+	return 0;
 }
 
 static void* 
@@ -235,20 +231,30 @@ work_thread(void *info)
 {
 	struct worker_thread *tinfo = (struct worker_thread *)info;
 	struct kevent kev[NEVENT];
+	struct kevent skev[NEVENT];
+	int skev_sz;
 	int status;
 
 	V("Thread %d started.\n", tinfo->id);
 	
+	skev_sz = 0;
 	while (1) {
-		status = kevent(tinfo->kqfd, NULL, 0, kev, NEVENT, NULL);
+		status = kevent(tinfo->kqfd, skev, skev_sz, kev, NEVENT, NULL);
 
-		if (status < 0) {
+		if (status <= 0) {
 			perror("Thread kevent");
 			exit(1);
 		}
 
+		skev_sz = 0;
 		for (int i = 0; i < status; i++) {
-			handle_event(tinfo, &kev[i]);
+			if (handle_event(tinfo, &kev[i]) == 0) {
+				if (options.skq && options.skq_flag == SINGLE_LEGACY) {
+					EV_SET(&skev[skev_sz], (int)kev[i].ident, EVFILT_READ, EV_ENABLE, 0, 0, kev[i].udata);
+					skev_sz++;
+					V("Thread %d queued connection %d for EV_ENABLE\n", tinfo->id, (int)kev[i].ident);
+				}
+			}
 		}
 	}
 }
@@ -260,7 +266,7 @@ usage()
 	       "    p: server port\n" 
 		   "    v: verbose mode\n"
 		   "    a: affinitize worker threads\n"
-		   "    m: enable SKQ\n"
+		   "    m: use a single KQ (SKQ and legacy)\n"
 		   "    d: SKQ dump interval (s)\n"
 		   "    t: number of server threads\n"
 		   "    h: show help\n"
@@ -336,6 +342,7 @@ create_workers(int kq, vector<struct worker_thread*> *thrds)
 				E("Cannot create kqueue\n");
 			}
 
+#ifdef FKQMULTI
 			int para = KQTUNE_MAKE(KQTUNE_RTSHARE, options.kq_rtshare);
 			status = ioctl(kq, FKQTUNE, &para);
 			if (status == -1) {
@@ -347,8 +354,8 @@ create_workers(int kq, vector<struct worker_thread*> *thrds)
 			if (status == -1) {
 				E("freq ioctl failed. ERR %d\n", errno);
 			}
-
-			V("KQ created. RTSHARE %d TFREQ %d\n", options.kq_rtshare, options.kq_tfreq);
+#endif
+			V("Thread %d KQ created. RTSHARE %d TFREQ %d\n", i, options.kq_rtshare, options.kq_tfreq);
 		}
 
 		thrd->kqfd = kq;
@@ -374,7 +381,6 @@ create_workers(int kq, vector<struct worker_thread*> *thrds)
 					E("Can't set affinity: %d\n", status);
 			}
 		}
-
 		
 		status = pthread_create(&thrd->thrd, &attr, work_thread, thrd);
 
@@ -408,9 +414,12 @@ main(int argc, char *argv[])
 	int kq = -1;
 	int status;
 	char ch;
-	char dbuf[1024 * 1024 + 1];
 	vector<struct worker_thread *> wrk_thrds;
     vector<int> server_socks;
+
+#ifdef FKQMULTI
+	char dbuf[1024 * 1024 + 1];
+#endif
 	
 	while ((ch = getopt(argc, argv, "Dd:p:at:m:vhcr:R:F:")) != -1) {
 		switch (ch) {
@@ -480,18 +489,20 @@ main(int argc, char *argv[])
 		}
 	}
 
-#define TIMER_FD (-1234)
-	EV_SET(&kev, TIMER_FD, EVFILT_TIMER, EV_ADD, NOTE_MSECONDS, 1, NULL);
-	status = kevent(mkqfd, &kev, 1, NULL, 0, NULL);
-	if (status == -1) {
-		E("Kevent failed %d\n", errno);
-	}
-
 	if (options.skq) {
 		kq = kqueue();
-		status = ioctl(kq, FKQMULTI, &options.skq_flag);
-		if (status == -1) {
-			E("ioctl failed. ERR %d\n", errno);
+
+		if (kq <= 0) {
+			E("Failed to create kqueue. ERR %d\n", errno);
+		}
+
+#ifdef FKQMULTI
+		if (options.skq_flag != SINGLE_LEGACY) {
+			status = ioctl(kq, FKQMULTI, &options.skq_flag);
+			if (status == -1) {
+				E("ioctl failed. ERR %d\n", errno);
+			}
+			V("SKQ enabled. SFLAG %d\n", options.skq_flag);
 		}
 
 		int para = KQTUNE_MAKE(KQTUNE_RTSHARE, options.kq_rtshare);
@@ -505,8 +516,11 @@ main(int argc, char *argv[])
 		if (status == -1) {
 			E("freq ioctl failed. ERR %d\n", errno);
 		}
-
-		V("SKQ enabled. SFLAG %d RTSHARE %d TFREQ %d\n", options.skq_flag, options.kq_rtshare, options.kq_tfreq);
+		V("KQ IOCTL: RTSHARE %d TFREQ %d\n", options.kq_rtshare, options.kq_tfreq);
+#else 
+		/* legacy single KQ only supports flag -1 */
+		options.skq_flag = SINGLE_LEGACY;
+#endif
 	}
 
 	/* delay distribution table */
@@ -522,7 +536,6 @@ main(int argc, char *argv[])
 	create_workers(kq, &wrk_thrds);
 	V("Entering main event loop...\n");
 	int cur_thread = 0;
-	long cur_ts = 0;
 	while (1) {
 		status = kevent(mkqfd, NULL, 0, &kev, 1, NULL);
 		
@@ -530,81 +543,60 @@ main(int argc, char *argv[])
 			E("Accept loop kevent failed %d\n", errno);
 		}
 
-		if (kev.ident == (uintptr_t)TIMER_FD) {
-			/* timer event */
-			if (options.skq_dump > 0) {
-				if (cur_ts % (options.skq_dump * 1000) == 0) {
+		struct sockaddr_in client_addr;
+		socklen_t client_addr_size = sizeof(client_addr);
 
-					uintptr_t args = (uintptr_t)dbuf;
-					memset(dbuf, 0, 1024 * 1024 + 1);
-					status = ioctl(kq, FKQMPRNT, &args);
-					if (status == -1) {
-						E("SKQ dump failed %d\n", errno);
-					} else {
-						fprintf(stdout, "====== KQ DUMP ======\n%s\n", dbuf);
-					}
-				}
+		int conn_fd = accept(kev.ident, (struct sockaddr*)&client_addr, &client_addr_size);
+
+		if (conn_fd < 0) {
+			W("Accept() failed on socket %d\n", (int)kev.ident);
+			continue;
+		}
+
+		if (setsockopt(conn_fd, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(enable)) < 0) {
+			W("setsockopt() failed on socket %d\n", conn_fd);
+			continue;
+		}
+
+		char ipaddr[INET_ADDRSTRLEN + 1];
+		strncpy(ipaddr, inet_ntoa(client_addr.sin_addr), INET_ADDRSTRLEN);
+		ipaddr[INET_ADDRSTRLEN] = 0;
+
+		V("Accepted new connection %d from %s\n", conn_fd, ipaddr);
+
+		int target_kq = wrk_thrds.at(cur_thread)->kqfd;
+
+		struct conn_hint *hint = new struct conn_hint;
+
+		if (options.conn_delay) {
+			hint->delay = dist_table[dist_table_idx % dist_table.size()];
+			dist_table_idx++;
+			V("Assigned connection %d delay %d us\n", conn_fd, hint->delay);
+		}
+
+		int ev_flags = EV_ADD;
+#ifdef FKQMULTI
+		for (uint32_t i = 0; i < options.hpip.size(); i++) {
+			if (strcmp(ipaddr, options.hpip.at(i)) == 0) {
+				V("Connection %d marked as realtime.\n", conn_fd);
+				ev_flags |= EV_REALTIME;
 			}
-			
-			long tmp_ev = 0;
+		}
+#endif
 
-			/* calculate the average throughput for the past second */
-			for (uint32_t i = 0; i < wrk_thrds.size(); i++) {
-				tmp_ev += wrk_thrds.at(i)->evcnt;
-			}
-			perf_sample[cur_ts % 1000] = tmp_ev;
-			perf_avg = tmp_ev - perf_sample[(cur_ts + 1) % 1000];
-			cur_ts++;
-		} else {
-			struct sockaddr_in client_addr;
-			socklen_t client_addr_size = sizeof(client_addr);
+		if (options.skq && options.skq_flag == SINGLE_LEGACY) {
+			ev_flags |= EV_DISPATCH;
+		}
 
-			int conn_fd = accept(kev.ident, (struct sockaddr*)&client_addr, &client_addr_size);
+		EV_SET(&kev, conn_fd, EVFILT_READ, ev_flags, 0, 0, hint);
+		status = kevent(target_kq, &kev, 1, NULL, 0, NULL);
 
-			if (conn_fd < 0) {
-				W("Accept() failed on socket %d\n", (int)kev.ident);
-				continue;
-			}
+		if (status == -1) {
+			E("Accept() kevent failed %d\n", errno);
+		}
 
-			if (setsockopt(conn_fd, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(enable)) < 0) {
-				W("setsockopt() failed on socket %d\n", conn_fd);
-				continue;
-			}
-
-			char ipaddr[INET_ADDRSTRLEN + 1];
-			strncpy(ipaddr, inet_ntoa(client_addr.sin_addr), INET_ADDRSTRLEN);
-			ipaddr[INET_ADDRSTRLEN] = 0;
-
-			V("Accepted new connection %d from %s\n", conn_fd, ipaddr);
-
-			int target_kq = wrk_thrds.at(cur_thread)->kqfd;
-
-			struct conn_hint *hint = new struct conn_hint;
-
-			if (options.conn_delay) {
-				hint->delay = dist_table[dist_table_idx % dist_table.size()];
-				dist_table_idx++;
-				V("Assigned connection %d delay %d us\n", conn_fd, hint->delay);
-			}
-
-			int ev_flags = EV_ADD;
-			for (uint32_t i = 0; i < options.hpip.size(); i++) {
-				if (strcmp(ipaddr, options.hpip.at(i)) == 0) {
-					V("Connection %d marked as realtime.\n", conn_fd);
-					ev_flags |= EV_REALTIME;
-				}
-			}
-
-			EV_SET(&kev, conn_fd, EVFILT_READ, ev_flags, 0, 0, hint);
-			status = kevent(target_kq, &kev, 1, NULL, 0, NULL);
-
-			if (status == -1) {
-				E("Accept() kevent failed %d\n", errno);
-			}
-
-			V("Connection %d assigned to thread %d\n", conn_fd, wrk_thrds.at(cur_thread)->id);
-			cur_thread = (cur_thread + 1) % wrk_thrds.size();
-		}		
+		V("Connection %d assigned to thread %d\n", conn_fd, wrk_thrds.at(cur_thread)->id);
+		cur_thread = (cur_thread + 1) % wrk_thrds.size();
 	}
 	
 	return 0;
