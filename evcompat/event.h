@@ -7,7 +7,10 @@
 struct event;
 
 struct event_init_config {
+#define EVB_MULTI 1
     int eb_flags;
+    int kq_rshare;
+    int kq_freq;
     int data;
 };
 
@@ -16,8 +19,7 @@ struct event_base {
     int eb_kqfd;
 
     // flags
-#define EVB_MULTI 1
-    int eb_flags;
+    struct event_init_config eb_conf;
 };
 
 typedef void (*ev_fn)(int, short, void *);
@@ -37,7 +39,7 @@ struct event {
 #define EV_WRITE (0x2)
 #define EV_TIMEOUT (0x4)
 #define EV_PERSIST (0x8)
-#define EV_RUNTIME (0x16)
+#define EV_RUNTIME (0x10)
     short type;
     ev_fn fn;
     void *arg;
@@ -78,6 +80,9 @@ event_cleanup(struct event* ev);
 const char*
 event_get_version(void);
 
+void 
+event_config_init(struct event_init_config* conf);
+
 static inline struct event_base *
 event_init()
 {
@@ -101,5 +106,6 @@ evtimer_del(struct event* ev)
 {
     return event_del(ev);
 }
+
 
 #endif

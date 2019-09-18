@@ -432,6 +432,8 @@ struct settings {
     int kqdump_interval;
     int priority_client;
     char priority_ip[INET_ADDRSTRLEN + 1];
+    int kq_rtshare;
+    int kq_freq;
 #ifdef EXTSTORE
     unsigned int ext_item_size; /* minimum size of items to store externally */
     unsigned int ext_item_age; /* max age of tail item before storing ext. */

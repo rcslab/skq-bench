@@ -14,7 +14,7 @@ import memparse as mp
 import libtc as tc
 
 step_inc_pct = 100
-init_step = 100000
+init_step = 100000 #
 
 term_pct = 5
 inc_pct = 50
@@ -28,15 +28,16 @@ sample_filename = "sample.txt"
 sched = [
 	"vanilla", -1,
 	"queue0", tc.make_sched_flag(tc.SCHED_QUEUE, 0),
-    "queue2", tc.make_sched_flag(tc.SCHED_QUEUE, 2),
+	"q0_ws4", tc.make_sched_flag(tc.SCHED_QUEUE, 0, feat=tc.SCHED_FEAT_WS, fargs=4),
+	"queue2", tc.make_sched_flag(tc.SCHED_QUEUE, 2),
+	"q2_ws4", tc.make_sched_flag(tc.SCHED_QUEUE, 2, feat=tc.SCHED_FEAT_WS, fargs=4),
 	"cpu0", tc.make_sched_flag(tc.SCHED_CPU, 0),
+	"cpu0_ws4", tc.make_sched_flag(tc.SCHED_CPU, 0, feat=tc.SCHED_FEAT_WS, fargs=4),
 	"cpu2", tc.make_sched_flag(tc.SCHED_CPU, 2),
+    "cpu2_ws4", tc.make_sched_flag(tc.SCHED_CPU, 2, feat=tc.SCHED_FEAT_WS, fargs=4),
 	"best2", tc.make_sched_flag(tc.SCHED_BEST, 2),
-	"best2_ws", tc.make_sched_flag(tc.SCHED_BEST, 2, feat=tc.SCHED_FEAT_WS, fargs=1),
-	"q0_ws", tc.make_sched_flag(tc.SCHED_QUEUE, 0, feat=tc.SCHED_FEAT_WS, fargs=1),
-	"q2_ws", tc.make_sched_flag(tc.SCHED_QUEUE, 2, feat=tc.SCHED_FEAT_WS, fargs=1),
-	"cpu0_ws", tc.make_sched_flag(tc.SCHED_CPU, 0, feat=tc.SCHED_FEAT_WS, fargs=1),
-    "cpu2_ws", tc.make_sched_flag(tc.SCHED_CPU, 2, feat=tc.SCHED_FEAT_WS, fargs=1),
+	"best2_ws4", tc.make_sched_flag(tc.SCHED_BEST, 2, feat=tc.SCHED_FEAT_WS, fargs=4),
+	#"rand", make_sched_flag(0, 0),
 ]
 
 master = ["skylake2"]
@@ -51,7 +52,7 @@ cooldown = 0
 conn_per_thread = 12
 server_delay = False
 conn_delay = True
-
+priority = False
 
 hostfile = None
 dump = False
@@ -93,9 +94,12 @@ def run_exp(sc, ld, lstat):
 			if conn_delay:
 				server_cmd += " -c "
 			
+			if priority:
+				server_cmd += " -F 10000 -r " + "192.168.101.11" + " "
+
 			if lstat:
 				server_cmd = "sudo lockstat -A -P -s4 -n16777216 " + server_cmd
-			
+
 			if sc != -1:
 				server_cmd = server_cmd + " -m " + str(sc)
 				if dump:
@@ -121,12 +125,13 @@ def run_exp(sc, ld, lstat):
 							  " -c " + str(conn_per_thread) + \
 							  " -o " + test_dir + "/" + sample_filename + \
 							  " -t " + str(client_threads) + \
-							  " -T " + str(client_threads) + \
-							  " -C 1 " + \
-							  " -Q 1000 " + \
 							  " -w " + str(duration) + \
 							  " -W " + str(warmup) + \
-							  " -i exponential "
+                              " -T " + str(client_threads) + \
+							  " -i exponential " + \
+							  " -C 1 " + \
+							  " -Q 1000 "
+							 # " -S 192.168.100.101 "
 
 		tc.log_print(master_cmd)
 		sp = tc.remote_exec(master, master_cmd, blocking=False)
@@ -230,8 +235,9 @@ def main():
 	global lockstat
 	global client_only
 	global server_delay
+	global priority
 
-	options = getopt.getopt(sys.argv[1:], 'h:sldcD')[0]
+	options = getopt.getopt(sys.argv[1:], 'h:sldcDp')[0]
 	for opt, arg in options:
 		if opt in ('-h'):
 			hostfile = arg
@@ -246,6 +252,8 @@ def main():
 			client_only=True
 		elif opt in ('-D'):
 			server_delay=True
+		elif opt in ('-p'):
+			priority=True
 
 	tc.init(str(threads) + "+" + str(len(clients)) + "x" + str(client_threads) + "x" + str(conn_per_thread))
 
@@ -255,7 +263,8 @@ def main():
 		  "KQ dump: " + str(dump) + "\n" \
 		  "Client only: " + str(client_only) + "\n" + \
 		  "Server delay: " + str(server_delay) + "\n" + \
-		  "Conn delay: " + str(conn_delay) + "\n")
+		  "Conn delay: " + str(conn_delay) + "\n"
+		  "Priority: " + str(priority) + "\n")
 
 	if hostfile != None:
 		hosts = tc.parse_hostfile(hostfile)

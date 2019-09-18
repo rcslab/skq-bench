@@ -7,10 +7,15 @@
 #ifdef FKQMULTI
     #define MULT_KQ (1)
 #else
-    #define FKQMULTI (0)
     #define MULT_KQ (0) 
+
+    #define FKQMULTI (0)
     #define FKQMPRNT (0)
+    #define FKQTUNE (0)
     #define EV_REALTIME (0)
+    #define KQTUNE_MAKE(obj, val) (0)
+    #define KQTUNE_FREQ (0)
+    #define KQTUNE_RTSHARE (0)
 #endif
 
 #define UNUSED(x) (void)(x)
@@ -33,7 +38,7 @@
 #define EVENT_DEL_BLOCK (0)
 #define EVENT_DEL_NOBLOCK (1)
 
-#define NEVENT (2048)
+#define NEVENT (128)
 #define CV_INIT_MAGIC (0xdeedb33f)
 
 

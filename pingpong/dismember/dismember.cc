@@ -21,6 +21,9 @@
 #include "../common.h"
 #include "Generator.h"
 
+#define DISMEM_STRING ("DISMEMBE")
+#define MAX_GEN_LEN (128)
+
 using namespace std;
 
 struct option {
@@ -41,10 +44,12 @@ struct option {
 	int master_mode;
 	int client_mode;
 
-	char server_ip[33];
-	char generator_name[129];
+	char server_ip[INET_ADDRSTRLEN + 1];
+	char generator_name[MAX_GEN_LEN + 1];
+	int master_server_ip_given;
+	char master_server_ip[INET_ADDRSTRLEN + 1];
 	int server_port;
-	int depth_limit = 1;
+	int depth_limit;
 
 	int warmup;
 	int duration;
@@ -53,6 +58,7 @@ struct option {
 static const char * DEFAULT_OUTPUT = "output.sample";
 
 static struct option options = {.verbose = 0,
+						 .depth_limit = 1,
 						 .server_ip = {0},
 						 .output_name = DEFAULT_OUTPUT,
 						 .client_thread_count = 1,
@@ -66,7 +72,9 @@ static struct option options = {.verbose = 0,
 						 .warmup = 0,
 						 .duration = 10,
 						 .server_port = DEFAULT_SERVER_CLIENT_CONN_PORT,
-						 .generator_name = {0}};
+						 .generator_name = {0},
+						 .master_server_ip = {0},
+						 .master_server_ip_given = 0};
 
 /* client server stuff */
 static vector<char *> client_ips;
@@ -178,7 +186,7 @@ void kqconn_state_machine(struct kqconn *conn)
 					conn->last_send = now;
 					conn->state = STATE_WAITING;
 
-					if (writebuf(conn->conn_fd, MAGIC_STRING, MESSAGE_LENGTH) < 0) {
+					if (writebuf(conn->conn_fd, options.master_mode ? NODELAY_STRING : DISMEM_STRING, MESSAGE_LENGTH) < 0) {
 						/* effectively skips this packet */
 						W("Cannot write to connection %d\n", conn->conn_fd);
 					}
@@ -245,7 +253,7 @@ worker_thread(int id, int notif_pipe, vector<struct datapt*> *data)
 
 	server_addr.sin_family = AF_INET;
 	server_addr.sin_port = htons(options.server_port);
-	server_addr.sin_addr.s_addr = inet_addr(options.server_ip);
+	server_addr.sin_addr.s_addr = inet_addr(options.master_mode ? options.master_server_ip : options.server_ip);
 	
 	// initialize all the connections
 	for (int i = 0 ; i < options.client_conn; i++) {
@@ -595,7 +603,8 @@ void dump_options()
 			"        output_file: %s\n"
 			"        server_ip: %s\n"
 			"        server_port: %d\n"
-			"        IA_DIST: %s\n",
+			"        IA_DIST: %s\n"
+			"        master_server_ip: %s\n",
 			options.client_conn,
 			options.client_thread_count,
 			options.target_qps,
@@ -606,7 +615,8 @@ void dump_options()
 			options.output_name,
 			options.server_ip,
 			options.server_port,
-			options.generator_name);
+			options.generator_name,
+			options.master_server_ip);
 	}
 }
 
@@ -623,13 +633,14 @@ static void usage()
 					"    -v: verbose mode.\n"
 					"    -W: warm up time.\n"
 					"    -w: test duration.\n"
-					"    -i: interarrival distribution. See mutilate.\n\n"
+					"    -i: interarrival distribution. Default fb_ia. See mutilate.\n\n"
 					"Master mode:\n"
 					"    -a: client addr.\n"
 					"    -A: client mode.\n"
 					"    -C: master connections.\n"
 					"    -Q: master qps.\n"
-					"    -T: master threads.\n" );
+					"    -T: master threads.\n" 
+					"    -S: master mode server ip\n");
 }
 
 /*
@@ -646,12 +657,14 @@ int
 main(int argc, char* argv[]) 
 {
 	/* set default values */
-	strncpy(options.generator_name, "fb_ia" , 128);
-	strncpy(options.server_ip, "127.0.0.1" , 32);
+	strncpy(options.generator_name, "fb_ia" , MAX_GEN_LEN);
+	strncpy(options.server_ip, "127.0.0.1" , INET_ADDRSTRLEN);
+	strncpy(options.master_server_ip, "127.0.0.1", INET_ADDRSTRLEN);
+
 	int ch;
 	FILE *resp_fp_csv;
 
-	while ((ch = getopt(argc, argv, "q:s:C:p:o:t:c:hvW:w:T:Aa:Q:i:")) != -1) {
+	while ((ch = getopt(argc, argv, "q:s:C:p:o:t:c:hvW:w:T:Aa:Q:i:S:")) != -1) {
 		switch (ch) {
 			case 'q':
 				options.target_qps = atoi(optarg);
@@ -667,7 +680,7 @@ main(int argc, char* argv[])
 				break;
 			case 's': {
 				string ip = get_ip_from_hostname(optarg);
-				strncpy(options.server_ip, ip.c_str(), 32);
+				strncpy(options.server_ip, ip.c_str(), INET_ADDRSTRLEN);
 				break;
 			}
 			case 'p':
@@ -703,6 +716,12 @@ main(int argc, char* argv[])
 					E("Master connections must be positive\n");
 				}
 				break;
+			case 'S': {
+				string ip = get_ip_from_hostname(optarg);
+				options.master_server_ip_given = 1;
+				strncpy(options.master_server_ip, ip.c_str(), INET_ADDRSTRLEN);
+				break;
+			}
 			case 'h':
 			case '?':
 				usage();
@@ -716,8 +735,8 @@ main(int argc, char* argv[])
 					E("Cannot be both master and client\n");
 				}
 				string ip = get_ip_from_hostname(optarg);
-				char *rip = new char[33];
-				strncpy(rip, ip.c_str(), 32);
+				char *rip = new char[INET_ADDRSTRLEN + 1];
+				strncpy(rip, ip.c_str(), INET_ADDRSTRLEN);
 				client_ips.push_back(rip);
 				options.master_mode = 1;
 				break;
@@ -758,6 +777,11 @@ main(int argc, char* argv[])
 			E("cannot open file for writing %s.", options.output_name);
 			exit(1);
 		}
+	}
+
+	if (options.master_mode && options.master_server_ip_given == 0) {
+		/* fall back to ip from -s */
+		strncpy(options.master_server_ip, options.server_ip, INET_ADDRSTRLEN);
 	}
 
 	options.client_num = client_ips.size();

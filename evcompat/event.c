@@ -34,8 +34,8 @@ static char dump_buf[1024 * 1024 + 1];
 void 
 event_kq_dump(struct event_base *base)
 {
-    if ((base->eb_flags & EVB_MULTI) == EVB_MULTI) {
-        if (MULT_KQ) {
+    if (MULT_KQ) {
+        if ((base->eb_conf.eb_flags & EVB_MULTI) == EVB_MULTI) {
             int ret;
             uintptr_t args = (uintptr_t)dump_buf;
             //fprintf(stdout, "Userspace buf: %p\n", (void*)args);
@@ -110,22 +110,44 @@ event_init_flags(struct event_init_config *config)
     assert(base->eb_kqfd > 0);
 
     if (config != NULL) {
-        base->eb_flags = config->eb_flags;
-        if ((config->eb_flags & EVB_MULTI) == EVB_MULTI) {
-            if (MULT_KQ) {
+        memcpy(&base->eb_conf, config, sizeof(struct event_init_config));
+        if (MULT_KQ) {
+            if ((config->eb_flags & EVB_MULTI) == EVB_MULTI) {
                 int ret, kqflag;
                 kqflag = config->data;
                 ret = ioctl(base->eb_kqfd, FKQMULTI, &kqflag);
                 if (ret == -1) {
                     fprintf(stderr, "multikq ioctl failed.");
-                    abort();
+                    exit(1);
                 }
-                fprintf(stdout, "Multi kqueue enabled: flag %d\n", kqflag);
+
+                kqflag = KQTUNE_MAKE(KQTUNE_RTSHARE, config->kq_rshare);
+                ret = ioctl (base->eb_kqfd, FKQTUNE, &kqflag);
+                if (ret == -1) {
+                    fprintf(stderr, "multikq rtshare tune ioctl failed.");
+                    exit(1);
+                }
+
+                kqflag = KQTUNE_MAKE(KQTUNE_FREQ, config->kq_freq);
+                ret = ioctl (base->eb_kqfd, FKQTUNE, &kqflag);
+                if (ret == -1) {
+                    fprintf(stderr, "multikq freq tune ioctl failed.");
+                    exit(1);
+                }
             }
         }
     }
 
     return base;
+}
+
+void 
+event_config_init(struct event_init_config* conf)
+{
+    conf->data = 0;
+    conf->eb_flags = 0;
+    conf->kq_freq = 0;
+    conf->kq_rshare = 100;
 }
 
 void 

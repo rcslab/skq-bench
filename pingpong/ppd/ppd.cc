@@ -17,6 +17,8 @@
 #include <sys/types.h>
 #include <sys/sysctl.h>
 #include <vector>
+#include <set>
+#include <netdb.h>
 
 #include "../common.h"
 
@@ -35,6 +37,9 @@ struct server_option {
 	int verbose;
 	int delay;
 	int conn_delay;
+	vector<char*> hpip;
+	int kq_rtshare;
+	int kq_tfreq;
 };
 
 struct conn_hint {
@@ -57,7 +62,9 @@ struct server_option options = {.threads = 1,
 								.skq_dump = 0,
 								.verbose = 0,
 								.delay = 0,
-								.conn_delay = 0};
+								.conn_delay = 0,
+								.kq_rtshare = 100,
+								.kq_tfreq = 0};
 
 static long perf_sample[1000] = {0};
 static volatile long perf_avg;
@@ -195,7 +202,19 @@ handle_event(struct worker_thread *tinfo, struct kevent* kev)
 	
 	V("Connection %d sent \"%s\"\n", conn_fd, data);
 
-	if (memcmp(data, MAGIC_STRING, MESSAGE_LENGTH) == 0) {
+	if (memcmp(data, IGNORE_STRING, MESSAGE_LENGTH) != 0) {
+
+		if (memcmp(data, NODELAY_STRING, MESSAGE_LENGTH) != 0) {
+			int server_delay = 0;
+			int now = get_time_us();
+			if (options.delay) {
+				server_delay = get_next_delay();
+			} else if (options.conn_delay) {
+				server_delay = ((struct conn_hint*)(kev->udata))->delay;
+			}
+
+			while (get_time_us() - now <= (uint64_t)server_delay) {};
+		}
 		
 		V("Connection %d asked for QPS - %ld\n", conn_fd, 0l);
 
@@ -206,26 +225,6 @@ handle_event(struct worker_thread *tinfo, struct kevent* kev)
 			drop_conn(tinfo, kev);
 		}
 
-		int server_delay = 0;
-		int now = get_time_us();
-		if (options.delay) {
-			server_delay = get_next_delay();
-		} else if (options.conn_delay) {
-			server_delay = ((struct conn_hint*)(kev->udata))->delay;
-		}
-
-		while (get_time_us() - now <= (uint64_t)server_delay) {};
-
-	} else if (memcmp(data, IGNORE_STRING, MESSAGE_LENGTH) == 0){
-		/* do nothing */
-	} else {
-		/* echo back */
-		status = writebuf(conn_fd, data, MESSAGE_LENGTH);
-
-		if (status < 0) {
-			W("Connection %d dropped due to writebuf. ERR: %d\n", conn_fd, errno);
-			drop_conn(tinfo, kev);
-		}
 	}
 
 	tinfo->evcnt++;
@@ -266,7 +265,10 @@ usage()
 		   "    t: number of server threads\n"
 		   "    h: show help\n"
 		   "    D: enable simulated delay, overwrites -c\n"
-		   "    c: enable per-connection delay\n");
+		   "    c: enable per-connection delay\n"
+		   "    r: realtime client hostname\n"
+		   "    R: realtime share\n"
+		   "    F: kqueue frequency\n");
 }
 
 static int
@@ -366,6 +368,23 @@ create_workers(int kq, vector<struct worker_thread*> *thrds)
 	}
 }
 
+static void
+get_ip_from_hostname(const char* hostname, char* buf, int len) 
+{
+  struct in_addr **addr;
+  struct hostent *he;
+
+  if ((he = gethostbyname(hostname)) == NULL) {
+    fprintf(stderr, "Hostname %s cannot be resolved.\n", hostname);
+    exit(1);
+  }
+  addr = (struct in_addr**)he->h_addr_list;
+  for (int i=0;addr[i]!=NULL;i++) {
+    strncpy(buf, inet_ntoa(*addr[i]), len);
+    break;
+  }
+}
+
 /*
  * Creates a worker thread.
  */
@@ -379,7 +398,7 @@ main(int argc, char *argv[])
 	vector<struct worker_thread *> wrk_thrds;
     vector<int> server_socks;
 	
-	while ((ch = getopt(argc, argv, "Dd:p:at:m:vhc")) != -1) {
+	while ((ch = getopt(argc, argv, "Dd:p:at:m:vhcr:R:F:")) != -1) {
 		switch (ch) {
 			case 'D':
 				options.delay = 1;
@@ -406,6 +425,18 @@ main(int argc, char *argv[])
 				break;
 			case 'c':
 				options.conn_delay = 1;
+				break;
+			case 'r': {
+				char* eip = new char[INET_ADDRSTRLEN + 1];
+				get_ip_from_hostname(optarg, eip, INET_ADDRSTRLEN);
+				options.hpip.push_back(eip);
+				break;
+			}
+			case 'R':
+				options.kq_rtshare = atoi(optarg);
+				break;
+			case 'F':
+				options.kq_tfreq = atoi(optarg);
 				break;
 			case 'h':
 			case '?':
@@ -448,7 +479,20 @@ main(int argc, char *argv[])
 		if (status == -1) {
 			E("ioctl failed. ERR %d\n", errno);
 		}
-		V("SKQ enabled: %d\n", options.skq_flag);
+
+		int para = KQTUNE_MAKE(KQTUNE_RTSHARE, options.kq_rtshare);
+		status = ioctl(kq, FKQTUNE, &para);
+		if (status == -1) {
+			E("rtshare ioctl failed. ERR %d\n", errno);
+		}
+
+		para = KQTUNE_MAKE(KQTUNE_FREQ, options.kq_tfreq);
+		status = ioctl(kq, FKQTUNE, &para);
+		if (status == -1) {
+			E("freq ioctl failed. ERR %d\n", errno);
+		}
+
+		V("SKQ enabled. SFLAG %d RTSHARE %d TFREQ %d\n", options.skq_flag, options.kq_rtshare, options.kq_tfreq);
 	}
 
 	/* delay distribution table */
@@ -498,7 +542,10 @@ main(int argc, char *argv[])
 			perf_avg = tmp_ev - perf_sample[(cur_ts + 1) % 1000];
 			cur_ts++;
 		} else {
-			int conn_fd = accept(kev.ident, NULL, NULL);
+			struct sockaddr_in client_addr;
+			socklen_t client_addr_size = sizeof(client_addr);
+
+			int conn_fd = accept(kev.ident, (struct sockaddr*)&client_addr, &client_addr_size);
 
 			if (conn_fd < 0) {
 				W("Accept() failed on socket %d\n", (int)kev.ident);
@@ -510,7 +557,11 @@ main(int argc, char *argv[])
 				continue;
 			}
 
-			V("Accepted new connection: %d\n", conn_fd);
+			char ipaddr[INET_ADDRSTRLEN + 1];
+			strncpy(ipaddr, inet_ntoa(client_addr.sin_addr), INET_ADDRSTRLEN);
+			ipaddr[INET_ADDRSTRLEN] = 0;
+
+			V("Accepted new connection %d from %s\n", conn_fd, ipaddr);
 
 			int target_kq = wrk_thrds.at(cur_thread)->kqfd;
 
@@ -522,7 +573,15 @@ main(int argc, char *argv[])
 				V("Assigned connection %d delay %d us\n", conn_fd, hint->delay);
 			}
 
-			EV_SET(&kev, conn_fd, EVFILT_READ, EV_ADD, 0, 0, hint);
+			int ev_flags = EV_ADD;
+			for (uint32_t i = 0; i < options.hpip.size(); i++) {
+				if (strcmp(ipaddr, options.hpip.at(i)) == 0) {
+					V("Connection %d marked as realtime.\n", conn_fd);
+					ev_flags |= EV_REALTIME;
+				}
+			}
+
+			EV_SET(&kev, conn_fd, EVFILT_READ, ev_flags, 0, 0, hint);
 			status = kevent(target_kq, &kev, 1, NULL, 0, NULL);
 
 			if (status == -1) {

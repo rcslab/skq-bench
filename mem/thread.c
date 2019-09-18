@@ -401,6 +401,8 @@ static void setup_global_evb(int evflags)
     struct event_init_config cfg;
     cfg.data = evflags;
     cfg.eb_flags = EVB_MULTI;
+    cfg.kq_rshare = settings.kq_rtshare;
+    cfg.kq_freq = settings.kq_freq;
     g_evb = event_init_flags(&cfg);
     
     if (!g_evb) {
@@ -567,7 +569,8 @@ void dispatch_conn_new(int sfd, enum conn_states init_state, int event_flags,
 
 
     item->is_priority = 0;
-
+    item->event_flags = event_flags;
+    
     if (settings.priority_client > 0) {
         /* obtain the ip address */
         struct sockaddr_in client_addr;
@@ -598,7 +601,6 @@ void dispatch_conn_new(int sfd, enum conn_states init_state, int event_flags,
 
     item->sfd = sfd;
     item->init_state = init_state;
-    item->event_flags = event_flags;
     item->read_buffer_size = read_buffer_size;
     item->transport = transport;
     item->mode = queue_new_conn;

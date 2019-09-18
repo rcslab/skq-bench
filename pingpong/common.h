@@ -19,11 +19,16 @@
 #ifndef FKQMULTI
 #define FKQMULTI (0)
 #define FKQMPRNT (0)
+#define FKQTUNE (0)
+#define EV_REALTIME (0)
+#define KQTUNE_MAKE(obj, val) (0)
+#define KQTUNE_FREQ (0)
+#define KQTUNE_RTSHARE (0)
 #endif
 
 /* XXX: */
-static const char* IGNORE_STRING = "IGNOREIG";
-static const char* MAGIC_STRING = "MAGICMAG";
+#define NODELAY_STRING ("NODELAYNO")
+#define IGNORE_STRING ("IGNOREIG")
 #define MESSAGE_LENGTH (8)
 
 static inline int 

@@ -19,6 +19,7 @@
 #endif
 #include "authfile.h"
 #include <sys/stat.h>
+#include <netdb.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <signal.h>
@@ -320,6 +321,8 @@ static void settings_init(void) {
     settings.set_affinity = false;
     settings.kqdump_interval = -1;
     settings.priority_client = 0;
+    settings.kq_rtshare = 100;
+    settings.kq_freq = 0;
 #ifdef MEMCACHED_DEBUG
     settings.relaxed_privileges = false;
 #endif
@@ -612,7 +615,7 @@ conn *conn_new(const int sfd, enum conn_states init_state,
     c->transport = transport;
     c->protocol = settings.binding_protocol;
 
-    /* unix socket mode doesn't need this, so zeroed out.  but why
+    /* unix socket mode doescn't need this, so zeroed out.  but why
      * is this done for every command?  presumably for UDP
      * mode.  */
     if (!settings.socketpath) {
@@ -727,6 +730,7 @@ conn *conn_new(const int sfd, enum conn_states init_state,
     event_set(&c->event, sfd, event_flags, event_handler, (void *)c);
     event_base_set(base, &c->event);
     c->ev_flags = event_flags;
+    c->is_priority = (event_flags & EV_RUNTIME) == EV_RUNTIME;
 
     if (event_add(&c->event, 0) == -1) {
         perror("event_add");
@@ -7170,6 +7174,8 @@ int main (int argc, char **argv) {
           "e" /* affinity */
           "j:" /* kqueue dump interval */
           "J:" /* priority clients */
+          "g:" /* kq_rtshare */
+          "G:" /* kq_freq */
           ;
 
     /* process arguments */
@@ -7319,6 +7325,12 @@ int main (int argc, char **argv) {
             break;
         case 'e':
             settings.set_affinity = true;
+            break;
+        case 'g':
+            settings.kq_rtshare = atoi(optarg);
+            break;
+        case 'G':
+            settings.kq_freq = atoi(optarg);
             break;
         case 'j':
             settings.kqdump_interval = atoi(optarg);
