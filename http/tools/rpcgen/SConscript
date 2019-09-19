@@ -1,0 +1,29 @@
+import sys
+
+Import('env')
+
+rpcgen_env = env.Clone()
+
+libs = [
+    "CCore",
+    "stdc++",
+]
+
+srcs = [
+    "cppgen.cc",
+    "node.cc",
+    "parser.cc",
+    "lexer.cc",
+    "main.cc"
+]
+
+if sys.platform != "darwin":
+    libs += ['rt', 'pthread']
+
+if sys.platform == "linux2":
+    libs += ['uuid', 'resolv']
+
+rpcgen_env.Append(LIBS = libs)
+
+rpcgen_env.Program("rpcgen", srcs)
+

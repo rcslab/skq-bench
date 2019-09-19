@@ -1,0 +1,12 @@
+
+Import('env')
+
+src = [
+    "message.cc",
+    "serviceclient.cc",
+    "serviceserver.cc",
+    "tcptransport.cc",
+]
+
+env.StaticLibrary("CRPC", src)
+

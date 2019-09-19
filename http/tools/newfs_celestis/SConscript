@@ -1,0 +1,19 @@
+
+Import('env')
+
+newfs_celestis_env = env.Clone()
+
+libs = [
+    "COSD",
+    "CCore",
+    "stdc++",
+]
+
+srcs = [
+    "main.cc"
+]
+
+newfs_celestis_env.Append(LIBS = libs)
+
+newfs_celestis_env.Program("newfs_celestis", srcs)
+

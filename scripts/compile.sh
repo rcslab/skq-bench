@@ -17,6 +17,9 @@ compile() {
     ssh $1 "cd $test_dir/memcached; ./configure ; make clean; make all" &
     ssh $1 "rm -rf $test_dir/evcompat/build; mkdir -p $test_dir/evcompat/build; cd $test_dir/evcompat/build; cmake ../; make"
     ssh $1 "cd $test_dir/mem; ./configure ;make clean; make all" &
+    ssh $1 "cd $test_dir/wrk; make clean; make" &
+    ssh $1 "cd $test_dir/wrk/wrk2_src; gmake clean; gmake" &
+    ssh $1 "cd $test_dir/http; scons -c; scons" &
     wait
     echo "$1 Done."
     echo ""

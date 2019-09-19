@@ -1,0 +1,47 @@
+import sys
+import os
+
+Import('env')
+
+tests_env = env.Clone()
+
+libs = [
+    "COSD",
+    "CRPC",
+    "CCore",
+    "stdc++",
+]
+
+if sys.platform != "darwin":
+    libs += ['rt', 'pthread', 'execinfo']
+
+if sys.platform == "linux2":
+    libs += ['uuid', 'resolv']
+
+
+tests_env.Append(LIBS = libs)
+
+td = []
+pd = []
+
+# Tests
+tests = [ ]
+for f in Glob('#tests/*_test.cc'):
+    tests.append(os.path.basename(f.rstr()[0:-3]))
+
+for t in tests:
+    td += tests_env.Program(t, t+".cc")
+
+# Performance Tests
+perfs = [ ]
+for f in Glob('#tests/*_perf.cc'):
+    perfs.append(os.path.basename(f.rstr()[0:-3]))
+
+for p in perfs:
+    pd += tests_env.Program(p, p+".cc")
+
+AlwaysBuild(Alias('testbench', td, "tests/testbench.py"))
+AlwaysBuild(Alias('perfbench', pd, "tests/perfbench.py"))
+AlwaysBuild(Alias('perfreport', pd, "tests/perfreport.sh"))
+
+

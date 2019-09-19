@@ -1,0 +1,19 @@
+
+Import('env')
+
+osddb_celestis_env = env.Clone()
+
+libs = [
+    "COSD",
+    "CCore",
+    "stdc++",
+]
+
+srcs = [
+    "main.cc"
+]
+
+osddb_celestis_env.Append(LIBS = libs)
+
+osddb_celestis_env.Program("osddb", srcs)
+

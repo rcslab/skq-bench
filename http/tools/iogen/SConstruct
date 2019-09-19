@@ -1,0 +1,27 @@
+import sys
+
+Import('env')
+
+iogen_env = env.Clone()
+
+libs = [
+    "CCore",
+    "stdc++",
+]
+
+srcs = [
+    "ioinstr.cc",
+    "randomio.cc",
+    "main.cc"
+]
+
+if sys.platform != "darwin":
+    libs += ['rt', 'pthread']
+
+if sys.platform == "linux2":
+    libs += ['uuid', 'resolv']
+
+iogen_env.Append(LIBS = libs)
+
+iogen_env.Library("iogen", srcs)
+
