@@ -489,6 +489,13 @@ main(int argc, char *argv[])
 		}
 	}
 
+#define TIMER_FD (-1234)
+	EV_SET(&kev, TIMER_FD, EVFILT_TIMER, EV_ADD, NOTE_MSECONDS, 1, NULL);
+	status = kevent(mkqfd, &kev, 1, NULL, 0, NULL);
+	if (status == -1) {
+		E("Kevent failed %d\n", errno);
+	}
+
 	if (options.skq) {
 		kq = kqueue();
 
@@ -536,11 +543,28 @@ main(int argc, char *argv[])
 	create_workers(kq, &wrk_thrds);
 	V("Entering main event loop...\n");
 	int cur_thread = 0;
+	long cur_ts = 0;
 	while (1) {
-		status = kevent(mkqfd, NULL, 0, &kev, 1, NULL);
-		
-		if (status != 1) {
+		if (kevent(mkqfd, NULL, 0, &kev, 1, NULL) != 1) {
 			E("Accept loop kevent failed %d\n", errno);
+		}
+
+		if (kev.ident == (uintptr_t)TIMER_FD) {
+#ifdef FKQMULTI
+			/* timer event */
+			if (options.skq_dump > 0 && cur_ts % (options.skq_dump * 1000) == 0) {
+				uintptr_t args = (uintptr_t)dbuf;
+				memset(dbuf, 0, 1024 * 1024 + 1);
+				status = ioctl(kq, FKQMPRNT, &args);
+				if (status == -1) {
+					E("SKQ dump failed %d\n", errno);
+				} else {
+					fprintf(stdout, "====== KQ DUMP ======\n%s\n", dbuf);
+				}
+			}
+#endif
+			cur_ts++;
+			continue;
 		}
 
 		struct sockaddr_in client_addr;

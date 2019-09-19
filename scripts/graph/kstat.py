@@ -71,7 +71,7 @@ def parse_file(f):
     ts = 0
     while i < len(lines):
         eline = lines[i]
-        if eline.find("KQ") != -1 and eline.find("DUMP") != -1 :
+        if eline.find("DUMP") != -1 or eline.find("Dump") != -1:
             if start:
                 try:
                     data["dat"].append(ET.fromstring(seg))
@@ -125,7 +125,7 @@ def main():
             datdir = arg
 
     if datdir == None:
-        datdir = "/home/oscar/projs/kqsched/scripts/pingpong/results.d/sample"
+        datdir = "/home/oscar/projs/kqsched/scripts/mem/results.d/sample"
         #raise Exception("Must specify -d parameter")
 
     process_dir(datdir)

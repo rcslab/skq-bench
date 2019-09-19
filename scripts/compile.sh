@@ -2,7 +2,7 @@
 test_dir="/tmp/tests.d"
 root=".."
 
-servers="skylake1 skylake2 skylake3 skylake4 skylake5 skylake6 skylake7 skylake8 localhost"
+servers="skylake1 skylake2 skylake3 skylake4 skylake5 skylake6 skylake7 skylake8 localhost sandybridge1 sandybridge2 sandybridge3 sandybridge4"
 
 rsync_flags="-qvchar"
 

@@ -20,20 +20,20 @@ root_dir = file_dir + "/../../"
 sample_filename = "sample.txt"
 
 sched = [
-	"vanilla", -1,
-	"queue0", tc.make_sched_flag(tc.SCHED_QUEUE, 0),
-	"q0_ws4", tc.make_sched_flag(tc.SCHED_QUEUE, 0, feat=tc.SCHED_FEAT_WS, fargs=4),
-	"queue2", tc.make_sched_flag(tc.SCHED_QUEUE, 2),
-	"q2_ws4", tc.make_sched_flag(tc.SCHED_QUEUE, 2, feat=tc.SCHED_FEAT_WS, fargs=4),
-	"cpu0", tc.make_sched_flag(tc.SCHED_CPU, 0),
-	"cpu0_ws8", tc.make_sched_flag(tc.SCHED_CPU, 0, feat=tc.SCHED_FEAT_WS, fargs=8),
-	"cpu2", tc.make_sched_flag(tc.SCHED_CPU, 2),
-    "cpu2_ws4", tc.make_sched_flag(tc.SCHED_CPU, 2, feat=tc.SCHED_FEAT_WS, fargs=4),
 	"best2", tc.make_sched_flag(tc.SCHED_BEST, 2),
-	"best2_ws4", tc.make_sched_flag(tc.SCHED_BEST, 2, feat=tc.SCHED_FEAT_WS, fargs=4),
+	"queue0", tc.make_sched_flag(tc.SCHED_QUEUE, 0),
+	"vanilla", -1,
+	"cpu0", tc.make_sched_flag(tc.SCHED_CPU, 0),
+	"q0_ws2", tc.make_sched_flag(tc.SCHED_QUEUE, 0, feat=tc.SCHED_FEAT_WS, fargs=2),
+	"queue2", tc.make_sched_flag(tc.SCHED_QUEUE, 2),
+	"q2_ws2", tc.make_sched_flag(tc.SCHED_QUEUE, 2, feat=tc.SCHED_FEAT_WS, fargs=2),
+	"cpu0_ws2", tc.make_sched_flag(tc.SCHED_CPU, 0, feat=tc.SCHED_FEAT_WS, fargs=2),
+	"cpu2", tc.make_sched_flag(tc.SCHED_CPU, 2),
+    "cpu2_ws2", tc.make_sched_flag(tc.SCHED_CPU, 2, feat=tc.SCHED_FEAT_WS, fargs=2),
+	"best2_ws2", tc.make_sched_flag(tc.SCHED_BEST, 2, feat=tc.SCHED_FEAT_WS, fargs=2),
 	#"rand", make_sched_flag(0, 0),
 	#"arachne", -2,
-	#"linox", -3,
+	#"linox", -3, 
 ]
 
 
@@ -43,16 +43,16 @@ init_step = 100000
 term_pct = 5
 inc_pct = 50
 
-master = ["skylake2"]
+master = ["skylake3"]
 server = ["skylake1"]
-clients = ["skylake3", "skylake4", "skylake5", "skylake6", "skylake7", "skylake8"]
+clients = ["skylake2", "skylake4", "skylake5", "skylake6", "skylake7", "skylake8", "sandybridge2", "sandybridge3", "sandybridge4"]
 
 threads = 12
 client_threads = 12
 warmup = 5
 duration = 10
 cooldown = 0
-conn_per_thread = 8
+conn_per_thread = 12
 hostfile = None
 dump = False
 lockstat = False
@@ -112,9 +112,9 @@ def run_exp(sc, ld, lstat):
 		time.sleep(1)
 		# start master
 		tc.log_print("Starting master...")
-		master_cmd = tc.get_cpuset_core(client_threads) + test_dir + "/mutilate/mutilate -K fb_key -V fb_value -i fb_ia -u 0.03 -Q 1000 " + \
-		                                "-T " + str(client_threads) + \
-									    " -C 1 " + \
+		master_cmd = test_dir + "/mutilate/mutilate -K fb_key -V fb_value -i fb_ia -u 0.03 -Q 1000 " + \
+		                                " -T " + str(client_threads) + \
+									    " -C " + str(conn_per_thread) + \
 										" -c " + str(conn_per_thread) + \
 										" -w " + str(warmup) + \
 										" -t " + str(duration) + \

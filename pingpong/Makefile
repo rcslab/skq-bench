@@ -1,2 +1,2 @@
-SUBDIR= ppd dismember
+SUBDIR= ppd dismember mppd
 .include <bsd.subdir.mk>
