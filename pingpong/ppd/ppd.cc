@@ -41,7 +41,14 @@ struct server_option {
 	vector<char*> hpip;
 	int kq_rtshare;
 	int kq_tfreq;
+	int table_sz;
 };
+
+struct cache_item {
+	int val;
+	char _pad[CACHE_LINE_SIZE - sizeof(int)];
+};
+_Static_assert(sizeof(struct cache_item) == CACHE_LINE_SIZE, "cache_item not cache line sized");
 
 struct conn_hint {
 	int delay;
@@ -53,6 +60,7 @@ struct worker_thread {
 	long evcnt;
 	int id;
 	char _pad[64];
+	struct cache_item *items;
 };
 
 struct server_option options = {.threads = 1, 
@@ -65,7 +73,8 @@ struct server_option options = {.threads = 1,
 								.delay = 0,
 								.conn_delay = 0,
 								.kq_rtshare = 100,
-								.kq_tfreq = 0};
+								.kq_tfreq = 0,
+								.table_sz = 0};
 
 /* XXX: legacy BS */
 static const int enable = 1;
@@ -170,12 +179,15 @@ get_next_delay()
 	}
 }
 
+static const struct ppd_msg GENERIC_REPLY = { .cmd = PPD_CRESP,
+									.dat_len = 0 };
+
 static int
 handle_event(struct worker_thread *tinfo, struct kevent* kev)
 {
 	int conn_fd;
 	int status;
-	char data[MESSAGE_LENGTH + 1] = {0};
+	struct ppd_msg *msg;
 
 	if (kev->filter != EVFILT_READ) {
 		E("Unknown event filter %d\n", kev->filter);
@@ -189,7 +201,7 @@ handle_event(struct worker_thread *tinfo, struct kevent* kev)
 		return ECONNRESET;
 	}
 
-	status = readbuf(conn_fd, data, MESSAGE_LENGTH);
+	status = read_msg(conn_fd, &msg);
 
 	if (status < 0) {
 		W("Connection %d dropped due to readbuf. ERR: %d\n", conn_fd, errno);
@@ -197,31 +209,69 @@ handle_event(struct worker_thread *tinfo, struct kevent* kev)
 		return ECONNRESET;
 	}
 
-	
-	V("Connection %d sent \"%s\"\n", conn_fd, data);
+	V("Connection %d cmd %d, dat_len %d \n", conn_fd, msg->cmd, msg->dat_len);
 
-	if (memcmp(data, IGNORE_STRING, MESSAGE_LENGTH) != 0) {
-
-		if (memcmp(data, NODELAY_STRING, MESSAGE_LENGTH) != 0) {
-			int server_delay = 0;
-			int now = get_time_us();
-			if (options.delay) {
-				server_delay = get_next_delay();
-			} else if (options.conn_delay) {
-				server_delay = ((struct conn_hint*)(kev->udata))->delay;
+	switch (msg->cmd) {
+		case PPD_CECHO: {
+			if (msg->dat_len != sizeof(uint32_t)) {
+				W("Connection %d invalid CTOUCH count %d\n", conn_fd, msg->dat_len);
+				break;
 			}
 
-			while (get_time_us() - now <= (uint64_t)server_delay) {};
+			/* XXX: not cross-endianess */
+			uint32_t enable = *(uint32_t*)&msg->dat[0];
+
+			if (enable) {
+				uint64_t server_delay = 0;
+				uint64_t now = get_time_us();
+				if (options.delay) {
+					server_delay = get_next_delay();
+				} else if (options.conn_delay) {
+					server_delay = ((struct conn_hint*)(kev->udata))->delay;
+				}
+
+				V("Conn %d Thread %d delaying for %ld...\n", conn_fd, tinfo->id, server_delay);
+				while (get_time_us() - now <= server_delay) {};
+			}
+
+			status = write_msg(conn_fd, &GENERIC_REPLY);
+
+			if (status < 0) {
+				W("Connection %d dropped due to writebuf. ERR: %d\n", conn_fd, errno);
+				drop_conn(tinfo, kev);
+			}
+			break;
 		}
+		case PPD_CTOUCH: {
+			if (msg->dat_len != sizeof(uint32_t)) {
+				W("Connection %d invalid CTOUCH count %d\n", conn_fd, msg->dat_len);
+				break;
+			}
+		
+			uint32_t count = *(uint32_t*)&msg->dat[0];
 
-		status = writebuf(conn_fd, data, MESSAGE_LENGTH);
+			if (tinfo->items != NULL) {
+				V("Conn %d Thread %d touching %d cache lines...\n", conn_fd, tinfo->id, count);
+				for(uint32_t i = 0; i < count; i++) {
+					tinfo->items[i % options.table_sz].val++;
+				}
+			}
 
-		if (status < 0) {
-			W("Connection %d dropped due to writebuf. ERR: %d\n", conn_fd, errno);
-			drop_conn(tinfo, kev);
+			status = write_msg(conn_fd, &GENERIC_REPLY);
+
+			if (status < 0) {
+				W("Connection %d dropped due to writebuf. ERR: %d\n", conn_fd, errno);
+				drop_conn(tinfo, kev);
+			}
+			break;
+		}
+		default: {
+			W("Received unknown cmd %d from conn %d", msg->cmd, conn_fd);
+			break;
 		}
 	}
 
+	free(msg);
 	tinfo->evcnt++;
 	return 0;
 }
@@ -274,7 +324,8 @@ usage()
 		   "    c: enable per-connection delay\n"
 		   "    r: realtime client hostname\n"
 		   "    R: realtime share\n"
-		   "    F: kqueue frequency\n");
+		   "    F: kqueue frequency\n"
+		   "    M: per-thread table entry count\n");
 }
 
 static int
@@ -330,11 +381,21 @@ create_workers(int kq, vector<struct worker_thread*> *thrds)
 
 	/* Start threads */
 	for (int i = 0; i < options.threads; i++) {
-		V("Starting worker thread %d...\n", i);
+		V("Creating worker thread %d...\n", i);
 
 		struct worker_thread *thrd = new worker_thread;
 		thrd->evcnt = 0;
 		thrd->id = i;
+		
+		if (options.table_sz > 0) {
+			V("Allocating %d items x %d CASZ for thread %d\n", options.table_sz, CACHE_LINE_SIZE, i);
+			thrd->items = (struct cache_item *)aligned_alloc(CACHE_LINE_SIZE, options.table_sz * sizeof(struct cache_item));
+			if (thrd->items == NULL) {
+				E("Thread %d failed to allocate memory for items\n", i);
+			}
+		} else {
+			thrd->items = NULL;
+		}
 		
 		if (!options.skq) {
 			kq = kqueue();
@@ -348,13 +409,14 @@ create_workers(int kq, vector<struct worker_thread*> *thrds)
 			if (status == -1) {
 				E("rtshare ioctl failed. ERR %d\n", errno);
 			}
-
+			
 			para = KQTUNE_MAKE(KQTUNE_FREQ, options.kq_tfreq);
 			status = ioctl(kq, FKQTUNE, &para);
 			if (status == -1) {
 				E("freq ioctl failed. ERR %d\n", errno);
 			}
 #endif
+
 			V("Thread %d KQ created. RTSHARE %d TFREQ %d\n", i, options.kq_rtshare, options.kq_tfreq);
 		}
 
@@ -421,7 +483,7 @@ main(int argc, char *argv[])
 	char dbuf[1024 * 1024 + 1];
 #endif
 	
-	while ((ch = getopt(argc, argv, "Dd:p:at:m:vhcr:R:F:")) != -1) {
+	while ((ch = getopt(argc, argv, "Dd:p:at:m:vhcr:R:F:M:")) != -1) {
 		switch (ch) {
 			case 'D':
 				options.delay = 1;
@@ -441,6 +503,9 @@ main(int argc, char *argv[])
 			case 'm':
 				options.skq = 1;
 				options.skq_flag = atoi(optarg);
+				break;
+			case 'M':
+				options.table_sz = atoi(optarg);
 				break;
 			case 'v':
 				options.verbose = 1;

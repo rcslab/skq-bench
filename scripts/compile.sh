@@ -2,9 +2,11 @@
 test_dir="/tmp/tests.d"
 root=".."
 
-servers="skylake1 skylake2 skylake3 skylake4 skylake5 skylake6 skylake7 skylake8 localhost sandybridge1 sandybridge2 sandybridge3 sandybridge4"
+servers="skylake1 skylake2 skylake3 skylake4 skylake5 skylake6 skylake7 skylake8 sandybridge2 sandybridge3 sandybridge4"
 
 rsync_flags="-qvchar"
+
+ssh_cmd="ssh -o StrictHostKeyChecking=no -t "
 
 compile() {
     # separate these functions because we might change kernel (reboot) without needing to recompile
@@ -12,14 +14,14 @@ compile() {
     echo "Syncing directories..."    
     rsync $rsync_flags $root/ $1:$test_dir/
     echo "Compiling..."
-    ssh $1 "cd $test_dir/pingpong; make clean; make all" &
-    ssh $1 "cd $test_dir/mutilate; scons" &
-    ssh $1 "cd $test_dir/memcached; ./configure ; make clean; make all" &
-    ssh $1 "rm -rf $test_dir/evcompat/build; mkdir -p $test_dir/evcompat/build; cd $test_dir/evcompat/build; cmake ../; make"
-    ssh $1 "cd $test_dir/mem; ./configure ;make clean; make all" &
-    ssh $1 "cd $test_dir/wrk; make clean; make" &
-    ssh $1 "cd $test_dir/wrk/wrk2_src; gmake clean; gmake" &
-    ssh $1 "cd $test_dir/http; scons -c; scons" &
+    $ssh_cmd $1 "cd $test_dir/pingpong; make clean; make all" &
+    $ssh_cmd $1 "cd $test_dir/mutilate; scons" &
+    $ssh_cmd $1 "cd $test_dir/memcached; ./configure ; make clean; make all" &
+    $ssh_cmd $1 "rm -rf $test_dir/evcompat/build; mkdir -p $test_dir/evcompat/build; cd $test_dir/evcompat/build; cmake ../; make"
+    $ssh_cmd $1 "cd $test_dir/mem; ./configure ;make clean; make all" &
+    $ssh_cmd $1 "cd $test_dir/wrk; make clean; make" &
+    $ssh_cmd $1 "cd $test_dir/wrk/wrk2_src; gmake clean; gmake" &
+    $ssh_cmd $1 "cd $test_dir/http; scons -c; scons" &
     wait
     echo "$1 Done."
     echo ""

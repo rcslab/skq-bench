@@ -21,13 +21,21 @@
 #include "../common.h"
 #include "Generator.h"
 
-#define DISMEM_STRING ("DISMEMBE")
-#define MAX_GEN_LEN (128)
+#define WORKLOAD_ECHO (0)
+#define WORKLOAD_TOUCH (1)
+
+#define MAX_GEN_LEN (31)
+
+#define MSG_TEST_OK (0x1234)
+#define MSG_TEST_START (0x2345)
+#define MSG_TEST_STOP (0x3456)
+#define MSG_TEST_QPS_ACK (0x4567)
 
 using namespace std;
 
 struct option {
 	int verbose;
+	int workload_type;
 
 	const char *output_name;
 
@@ -46,6 +54,7 @@ struct option {
 
 	char server_ip[INET_ADDRSTRLEN + 1];
 	char generator_name[MAX_GEN_LEN + 1];
+	char wgen_name[MAX_GEN_LEN + 1];
 	int master_server_ip_given;
 	char master_server_ip[INET_ADDRSTRLEN + 1];
 	int server_port;
@@ -82,8 +91,10 @@ static struct option options = {.verbose = 0,
 						 .duration = 10,
 						 .server_port = DEFAULT_SERVER_CLIENT_CONN_PORT,
 						 .generator_name = {0},
+						 .wgen_name = {0},
 						 .master_server_ip = {0},
-						 .master_server_ip_given = 0};
+						 .master_server_ip_given = 0,
+						 .workload_type = 0};
 
 /* client server stuff */
 static vector<char *> client_ips;
@@ -111,6 +122,7 @@ enum conn_state {
 
 struct kqconn{
 	Generator *gen;
+	Generator *wgen;
 	int conn_fd;
 	int timer;
 	int timer_expired;
@@ -139,8 +151,38 @@ void kqconn_cleanup(struct kqconn *conn)
 		E("Error kevent kqconn_cleanup\n");
 	}
 
+	delete conn->wgen;
 	delete conn->gen;
 	delete conn;
+}
+
+struct ppd_msg * create_msg(struct kqconn *conn)
+{
+	struct ppd_msg *msg;
+	uint32_t load;
+
+	if (options.master_mode) {
+		load = 0;
+	} else {
+		load = (uint32_t)conn->wgen->generate();
+	}
+
+	msg = (struct ppd_msg *) malloc(sizeof(struct ppd_msg) + sizeof(uint32_t));
+
+	if (msg == NULL) {
+		E("Can't allocate memory for msg\n");
+	}
+
+	msg->dat_len = sizeof(uint32_t);
+	memcpy(msg->dat, &load, sizeof(uint32_t));
+
+	if (options.workload_type == WORKLOAD_ECHO) {
+		msg->cmd = PPD_CECHO;
+	} else {
+		msg->cmd = PPD_CTOUCH;
+	}
+
+	return msg;
 }
 
 void kqconn_state_machine(struct kqconn *conn)
@@ -188,15 +230,13 @@ void kqconn_state_machine(struct kqconn *conn)
 						E("Oscar fucked up\n");
 					}
 
-					//V("Packet sent in conn %d\n", conn->conn_fd);
-
 					conn->depth++;
 					conn->next_send += (int)(conn->gen->generate() * 1000000.0);
 					conn->last_send = now;
 					conn->state = STATE_WAITING;
 
-					if (writebuf(conn->conn_fd, options.master_mode ? NODELAY_STRING : DISMEM_STRING, MESSAGE_LENGTH) < 0) {
-						/* effectively skips this packet */
+					if (write_msg(conn->conn_fd, create_msg(conn)) < 0) {
+						/* effectively skipping this packet */
 						W("Cannot write to connection %d\n", conn->conn_fd);
 					}
 					break;
@@ -212,18 +252,17 @@ void kqconn_state_machine(struct kqconn *conn)
 void ev_loop(int id, struct kevent *ev, struct kqconn *conn)
 {
 	int status;
-	char data[MESSAGE_LENGTH + 1];
+	struct ppd_msg *msg;
 
 	if ((int)ev->ident == conn->conn_fd) {
 		/* we got something to read */
-		status = readbuf(conn->conn_fd, &data, MESSAGE_LENGTH);
+		status = read_msg(conn->conn_fd, &msg);
 		if (status < 0) {
 			E("Connection %d readbuf failed. ERR: %d\n", conn->conn_fd, errno);
 		}
 
-		if (memcmp(options.master_mode ? NODELAY_STRING : DISMEM_STRING, data, MESSAGE_LENGTH) != 0) {
-			data[MESSAGE_LENGTH] = 0;
-			E("Connection %d received invalid response %s", conn->conn_fd, data);
+		if (msg->cmd != PPD_CRESP) {
+			E("Invalid response from the server %d \n", msg->cmd);
 		}
 
 		conn->depth--;
@@ -241,8 +280,10 @@ void ev_loop(int id, struct kevent *ev, struct kqconn *conn)
 				V("Conn %d: TS: %d LAT: %ld, QPS: %ld\n", conn->conn_fd, (int)cur_time, dat->lat, (long)dat->qps);
 			}
 		}
+		
+		free(msg);
 
-		kqconn_state_machine(conn);		
+		kqconn_state_machine(conn);
 
 	} else if ((int)ev->ident == conn->timer) {
 		conn->timer_expired = 1;
@@ -312,6 +353,10 @@ worker_thread(int id, int notif_pipe, vector<struct datapt*> *data)
 			english->gen = createGenerator(options.generator_name);
 			if (english->gen == NULL) {
 				E("Unknown generator \"%s\"\n", options.generator_name);
+			}
+			english->wgen = createGenerator(options.wgen_name);
+			if (english->wgen == NULL) {
+				E("Unknown generator \"%s\"\n", options.wgen_name);
 			}
 			english->gen->set_lambda((double)options.target_qps / (double)(options.client_thread_count * options.client_conn));
 
@@ -689,7 +734,8 @@ void dump_options()
 			"        server_ip: %s\n"
 			"        server_port: %d\n"
 			"        IA_DIST: %s\n"
-			"        master_server_ip: %s\n",
+			"        master_server_ip: %s\n"
+			"        workload_type: %d\n",
 			options.client_conn,
 			options.client_thread_count,
 			options.target_qps,
@@ -701,7 +747,8 @@ void dump_options()
 			options.server_ip,
 			options.server_port,
 			options.generator_name,
-			options.master_server_ip);
+			options.master_server_ip,
+			options.workload_type);
 	}
 }
 
@@ -718,6 +765,8 @@ static void usage()
 					"    -v: verbose mode.\n"
 					"    -W: warm up time.\n"
 					"    -w: test duration.\n"
+					"    -l: workload type. ECHO(0), TOUCH(1). Default 0.\n"
+					"    -L: workload distribution. Default Fixed:64.\n"
 					"    -i: interarrival distribution. Default fb_ia. See mutilate.\n\n"
 					"Master mode:\n"
 					"    -a: client addr.\n"
@@ -742,6 +791,7 @@ int
 main(int argc, char* argv[]) 
 {
 	/* set default values */
+	strncpy(options.wgen_name, "fixed:64" , MAX_GEN_LEN);
 	strncpy(options.generator_name, "fb_ia" , MAX_GEN_LEN);
 	strncpy(options.server_ip, "127.0.0.1" , INET_ADDRSTRLEN);
 	strncpy(options.master_server_ip, "127.0.0.1", INET_ADDRSTRLEN);
@@ -749,7 +799,7 @@ main(int argc, char* argv[])
 	int ch;
 	FILE *resp_fp_csv;
 
-	while ((ch = getopt(argc, argv, "q:s:C:p:o:t:c:hvW:w:T:Aa:Q:i:S:")) != -1) {
+	while ((ch = getopt(argc, argv, "q:s:C:p:o:t:c:hvW:w:T:Aa:Q:i:S:l:L:")) != -1) {
 		switch (ch) {
 			case 'q':
 				options.target_qps = atoi(optarg);
@@ -795,6 +845,14 @@ main(int argc, char* argv[])
 					E("Client connections must be positive\n");
 				}
 				break;
+			case 'L': {
+				strncpy(options.wgen_name, optarg, MAX_GEN_LEN);
+				break;
+			}
+			case 'l': {
+				options.workload_type = atoi(optarg);
+				break;
+			}
 			case 'C':
 				options.master_conn = atoi(optarg);
 				if (options.master_conn <= 0) {
@@ -846,7 +904,7 @@ main(int argc, char* argv[])
 				break;
 			}
 			case 'i': {
-				strncpy(options.generator_name, optarg, 128);
+				strncpy(options.generator_name, optarg, MAX_GEN_LEN);
 				break;
 			}
 			default:
@@ -1004,7 +1062,7 @@ main(int argc, char* argv[])
 		qps += client_stop();
 	}
 
-	V("Aggreated QPS %d over %d seconds\n", qps, options.duration);
+	V("Aggregated %d operations over %d seconds = \n", qps, options.duration);
 	qps = qps / (options.duration);
 
 	if (!options.client_mode) {

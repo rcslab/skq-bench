@@ -20,17 +20,18 @@ root_dir = file_dir + "/../../"
 sample_filename = "sample.txt"
 
 sched = [
-	"best2", tc.make_sched_flag(tc.SCHED_BEST, 2),
-	"queue0", tc.make_sched_flag(tc.SCHED_QUEUE, 0),
 	"vanilla", -1,
-	"cpu0", tc.make_sched_flag(tc.SCHED_CPU, 0),
-	"q0_ws2", tc.make_sched_flag(tc.SCHED_QUEUE, 0, feat=tc.SCHED_FEAT_WS, fargs=2),
-	"queue2", tc.make_sched_flag(tc.SCHED_QUEUE, 2),
+	"best2", tc.make_sched_flag(tc.SCHED_BEST, 2),
+
+	#"q0_ws2", tc.make_sched_flag(tc.SCHED_QUEUE, 0, feat=tc.SCHED_FEAT_WS, fargs=2),
+	#"queue2", tc.make_sched_flag(tc.SCHED_QUEUE, 2),
 	"q2_ws2", tc.make_sched_flag(tc.SCHED_QUEUE, 2, feat=tc.SCHED_FEAT_WS, fargs=2),
 	"cpu0_ws2", tc.make_sched_flag(tc.SCHED_CPU, 0, feat=tc.SCHED_FEAT_WS, fargs=2),
 	"cpu2", tc.make_sched_flag(tc.SCHED_CPU, 2),
     "cpu2_ws2", tc.make_sched_flag(tc.SCHED_CPU, 2, feat=tc.SCHED_FEAT_WS, fargs=2),
+	#"queue0", tc.make_sched_flag(tc.SCHED_QUEUE, 0),
 	"best2_ws2", tc.make_sched_flag(tc.SCHED_BEST, 2, feat=tc.SCHED_FEAT_WS, fargs=2),
+	#"cpu0", tc.make_sched_flag(tc.SCHED_CPU, 0),
 	#"rand", make_sched_flag(0, 0),
 	#"arachne", -2,
 	#"linox", -3, 
@@ -40,7 +41,7 @@ sched = [
 step_inc_pct = 100
 init_step = 100000
 
-term_pct = 5
+term_pct = 1
 inc_pct = 50
 
 master = ["skylake3"]
