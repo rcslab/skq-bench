@@ -19,6 +19,7 @@
 #include <vector>
 #include <set>
 #include <netdb.h>
+#include <sstream>
 
 #include "../common.h"
 
@@ -36,11 +37,16 @@ struct server_option {
 	int cpu_affinity;
 	int skq_dump;
 	int verbose;
+	
+	/* only applies to ECHO requests */
 	int delay;
 	int conn_delay;
+
 	vector<char*> hpip;
 	int kq_rtshare;
 	int kq_tfreq;
+	
+	/* only applies to TOUCH requests */
 	int table_sz;
 };
 
@@ -52,6 +58,7 @@ _Static_assert(sizeof(struct cache_item) == CACHE_LINE_SIZE, "cache_item not cac
 
 struct conn_hint {
 	int delay;
+	struct cache_item *items;
 };
 
 struct worker_thread {
@@ -60,7 +67,6 @@ struct worker_thread {
 	long evcnt;
 	int id;
 	char _pad[64];
-	struct cache_item *items;
 };
 
 struct server_option options = {.threads = 1, 
@@ -74,14 +80,23 @@ struct server_option options = {.threads = 1,
 								.conn_delay = 0,
 								.kq_rtshare = 100,
 								.kq_tfreq = 0,
-								.table_sz = 0};
+								.table_sz = 64};
 
-/* XXX: legacy BS */
+/* XXX: legacy stuff */
 static const int enable = 1;
 
 /* cpu assignment */
 static int ncpu = 0;
 static int cur = 0;
+
+static void
+conn_hint_destroy(struct conn_hint *hint)
+{
+	if (hint->items != NULL) {
+		free(hint->items);
+	}
+	delete hint;
+}
 
 static void 
 server_socket_prepare(vector<int> *socks) 
@@ -143,7 +158,7 @@ drop_conn(struct worker_thread *tinfo, struct kevent *kev)
 
 	close(conn_fd);
 
-	free(kev->udata);
+	conn_hint_destroy((struct conn_hint *)kev->udata);
 }
 
 static void
@@ -187,6 +202,7 @@ handle_event(struct worker_thread *tinfo, struct kevent* kev)
 {
 	int conn_fd;
 	int status;
+	struct conn_hint *hint;
 	struct ppd_msg *msg;
 
 	if (kev->filter != EVFILT_READ) {
@@ -194,6 +210,7 @@ handle_event(struct worker_thread *tinfo, struct kevent* kev)
 	}
 
 	conn_fd = kev->ident;
+	hint = (struct conn_hint*)kev->udata;
 
 	if (kev->flags & EV_EOF) {
 		V("Connection %d dropped due to EOF. ERR: %d\n", conn_fd, kev->fflags);
@@ -213,21 +230,21 @@ handle_event(struct worker_thread *tinfo, struct kevent* kev)
 
 	switch (msg->cmd) {
 		case PPD_CECHO: {
-			if (msg->dat_len != sizeof(uint32_t)) {
-				W("Connection %d invalid CTOUCH count %d\n", conn_fd, msg->dat_len);
+			if (msg->dat_len != sizeof(struct ppd_echo_arg)) {
+				W("Connection %d invalid echo request\n", conn_fd);
 				break;
 			}
 
 			/* XXX: not cross-endianess */
-			uint32_t enable = *(uint32_t*)&msg->dat[0];
+			struct ppd_echo_arg *arg = (struct ppd_echo_arg*)&msg->dat[0];
 
-			if (enable) {
+			if (arg->enable_delay) {
 				uint64_t server_delay = 0;
 				uint64_t now = get_time_us();
 				if (options.delay) {
 					server_delay = get_next_delay();
 				} else if (options.conn_delay) {
-					server_delay = ((struct conn_hint*)(kev->udata))->delay;
+					server_delay = hint->delay;
 				}
 
 				V("Conn %d Thread %d delaying for %ld...\n", conn_fd, tinfo->id, server_delay);
@@ -243,17 +260,26 @@ handle_event(struct worker_thread *tinfo, struct kevent* kev)
 			break;
 		}
 		case PPD_CTOUCH: {
-			if (msg->dat_len != sizeof(uint32_t)) {
-				W("Connection %d invalid CTOUCH count %d\n", conn_fd, msg->dat_len);
+			if (msg->dat_len != sizeof(struct ppd_touch_arg)) {
+				W("Connection %d invalid touch request\n", conn_fd);
 				break;
 			}
-		
-			uint32_t count = *(uint32_t*)&msg->dat[0];
 
-			if (tinfo->items != NULL) {
-				V("Conn %d Thread %d touching %d cache lines...\n", conn_fd, tinfo->id, count);
-				for(uint32_t i = 0; i < count; i++) {
-					tinfo->items[i % options.table_sz].val++;
+
+
+			/* XXX: not cross-endianess */
+			struct ppd_touch_arg *arg = (struct ppd_touch_arg*)&msg->dat[0];
+
+			if (hint->items != NULL) {
+				V("Conn %d Thread %d updating %d items val %d...\n", conn_fd, tinfo->id, arg->touch_cnt, arg->inc);
+				int sum;
+				for(uint32_t i = 0; i < arg->touch_cnt; i++) {
+					if (arg->inc > 0) {
+						hint->items[i % options.table_sz].val += arg->inc;
+					} else {
+						/* only read */
+						sum = hint->items[i % options.table_sz].val;
+					}	
 				}
 			}
 
@@ -309,6 +335,31 @@ work_thread(void *info)
 	}
 }
 
+void dump_options()
+{
+	stringstream ss;
+	ss << "Configuration:\n"
+	   << "        worker threads: " << options.threads << endl
+	   << "        port: " << options.port << endl
+	   << "        single KQ: " << options.skq << endl
+	   << "        single KQ flags: " << options.skq_flag << endl
+	   << "        single KQ dump:" << options.skq_dump << endl
+	   << "        CPU affinity: " << options.cpu_affinity << endl
+	   << "        verbose: " << options.verbose << endl
+	   << "        generic delay: " << options.delay << endl
+	   << "        connection delay: " << options.conn_delay << endl
+	   << "        kq_rtshare: " << options.kq_rtshare << endl
+	   << "        kq_tfreq: " << options.kq_tfreq << endl
+	   << "        connection item size: " << options.table_sz << endl
+	   << "        priority client IPs (" << options.hpip.size() << "): " << endl;
+
+	for(uint i = 0; i < options.hpip.size(); i++) {
+		ss << "                " << options.hpip.at(i) << endl;
+	}
+
+	V("%s", ss.str().c_str());
+}
+
 static void
 usage() 
 {
@@ -325,7 +376,7 @@ usage()
 		   "    r: realtime client hostname\n"
 		   "    R: realtime share\n"
 		   "    F: kqueue frequency\n"
-		   "    M: per-thread table entry count\n");
+		   "    M: per connection table entry count. Default 64.\n");
 }
 
 static int
@@ -386,16 +437,6 @@ create_workers(int kq, vector<struct worker_thread*> *thrds)
 		struct worker_thread *thrd = new worker_thread;
 		thrd->evcnt = 0;
 		thrd->id = i;
-		
-		if (options.table_sz > 0) {
-			V("Allocating %d items x %d CASZ for thread %d\n", options.table_sz, CACHE_LINE_SIZE, i);
-			thrd->items = (struct cache_item *)aligned_alloc(CACHE_LINE_SIZE, options.table_sz * sizeof(struct cache_item));
-			if (thrd->items == NULL) {
-				E("Thread %d failed to allocate memory for items\n", i);
-			}
-		} else {
-			thrd->items = NULL;
-		}
 		
 		if (!options.skq) {
 			kq = kqueue();
@@ -535,6 +576,8 @@ main(int argc, char *argv[])
 		}
 	}
 
+	dump_options();
+
 	// don't raise SIGPIPE when sending into broken TCP connections
 	::signal(SIGPIPE, SIG_IGN); 
 
@@ -653,9 +696,21 @@ main(int argc, char *argv[])
 
 		V("Accepted new connection %d from %s\n", conn_fd, ipaddr);
 
-		int target_kq = wrk_thrds.at(cur_thread)->kqfd;
-
 		struct conn_hint *hint = new struct conn_hint;
+
+		if (options.table_sz > 0) {
+			V("Allocating %d items x %d CASZ for connnection %d\n", options.table_sz, CACHE_LINE_SIZE, conn_fd);
+			hint->items = (struct cache_item *)aligned_alloc(CACHE_LINE_SIZE, options.table_sz * sizeof(struct cache_item));
+			if (hint->items == NULL) {
+				W("Connection %d dropped - failed to allocate memory for items\n", conn_fd);
+				close(conn_fd);
+				continue;
+			}
+		} else {
+			hint->items = NULL;
+		}
+
+		int target_kq = wrk_thrds.at(cur_thread)->kqfd;
 
 		if (options.conn_delay) {
 			hint->delay = dist_table[dist_table_idx % dist_table.size()];
@@ -664,6 +719,7 @@ main(int argc, char *argv[])
 		}
 
 		int ev_flags = EV_ADD;
+
 #ifdef FKQMULTI
 		for (uint32_t i = 0; i < options.hpip.size(); i++) {
 			if (strcmp(ipaddr, options.hpip.at(i)) == 0) {

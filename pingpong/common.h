@@ -13,14 +13,23 @@
 #define DEFAULT_CLIENT_CTL_PORT (9901)
 
 #define PPD_CECHO (1)
-#define PPD_CTOUCH (2)
-#define PPD_CRESP (-1)
+struct ppd_echo_arg {
+	uint32_t enable_delay;
+};
 
+#define PPD_CTOUCH (2)
+struct ppd_touch_arg {
+	uint32_t touch_cnt;
+	uint32_t inc;
+};
+
+#define PPD_CRESP (-1)
 struct ppd_msg {
 	int cmd;
 	int dat_len;
 	char dat[0];
 };
+
 
 static inline int 
 get_numcpus()

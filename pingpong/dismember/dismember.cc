@@ -33,9 +33,51 @@
 
 using namespace std;
 
+
+#define NSHUFF (50)
+/*
+ * Pseudo-random number generator for perturbing the profiling clock,
+ * and whatever else we might use it for.  The result is uniform on
+ * [0, 2^31 - 1].
+ */
+static u_long
+get_rand(u_long* seed)
+{
+	long x, hi, lo, t;
+
+	/*
+	 * Compute x[n + 1] = (7^5 * x[n]) mod (2^31 - 1).
+	 * From "Random number generators: good ones are hard to find",
+	 * Park and Miller, Communications of the ACM, vol. 31, no. 10,
+	 * October 1988, p. 1195.
+	 */
+	/* Can't be initialized with 0, so use another value. */
+	if ((x = *seed) == 0)
+		x = 123459876;
+	hi = x / 127773;
+	lo = x % 127773;
+	t = 16807 * lo - 2836 * hi;
+	if (t < 0)
+		t += 0x7fffffff;
+	*seed = t;
+	return (t);
+}
+
+static void
+seed_rand(u_long *field, u_long seed)
+{
+	int i;
+
+	*field = seed;
+	for (i = 0; i < NSHUFF; i++)
+		get_rand(field);
+}
+
 struct option {
 	int verbose;
+
 	int workload_type;
+	struct ppd_msg * (*create_msg)(struct kqconn *conn);
 
 	const char *output_name;
 
@@ -62,6 +104,8 @@ struct option {
 
 	int warmup;
 	int duration;
+
+	int update_ratio;
 };
 
 #define DEFAULT_OUTPUT ("output.sample")
@@ -94,7 +138,9 @@ static struct option options = {.verbose = 0,
 						 .wgen_name = {0},
 						 .master_server_ip = {0},
 						 .master_server_ip_given = 0,
-						 .workload_type = 0};
+						 .workload_type = 0,
+						 .update_ratio = 0,
+						 .create_msg = NULL};
 
 /* client server stuff */
 static vector<char *> client_ips;
@@ -123,6 +169,7 @@ enum conn_state {
 struct kqconn{
 	Generator *gen;
 	Generator *wgen;
+	u_long rseed;
 	int conn_fd;
 	int timer;
 	int timer_expired;
@@ -156,32 +203,57 @@ void kqconn_cleanup(struct kqconn *conn)
 	delete conn;
 }
 
-struct ppd_msg * create_msg(struct kqconn *conn)
+static struct ppd_msg * 
+create_msg_touch(struct kqconn *conn)
 {
 	struct ppd_msg *msg;
-	uint32_t load;
+	struct ppd_touch_arg load;
 
-	if (options.master_mode) {
-		load = 0;
-	} else {
-		load = (uint32_t)conn->wgen->generate();
-	}
-
-	msg = (struct ppd_msg *) malloc(sizeof(struct ppd_msg) + sizeof(uint32_t));
+	msg = (struct ppd_msg *) malloc(sizeof(struct ppd_msg) + sizeof(struct ppd_touch_arg));
 
 	if (msg == NULL) {
 		E("Can't allocate memory for msg\n");
 	}
 
-	msg->dat_len = sizeof(uint32_t);
-	memcpy(msg->dat, &load, sizeof(uint32_t));
-
-	if (options.workload_type == WORKLOAD_ECHO) {
-		msg->cmd = PPD_CECHO;
+	if (options.master_mode) {
+		load.touch_cnt = 0;
 	} else {
-		msg->cmd = PPD_CTOUCH;
+		load.touch_cnt = (uint32_t)conn->wgen->generate();
 	}
 
+	if ((int)(get_rand(&conn->rseed) % 100) < options.update_ratio) {
+		load.inc = 1;
+	} else {
+		load.inc = 0;
+	}
+
+	msg->cmd = PPD_CTOUCH;
+	msg->dat_len = sizeof(struct ppd_touch_arg);
+	memcpy(msg->dat, &load, sizeof(struct ppd_touch_arg));
+	return msg;
+}
+
+static struct ppd_msg * 
+create_msg_echo(struct kqconn *conn)
+{
+	struct ppd_msg *msg;
+	struct ppd_echo_arg load;
+
+	msg = (struct ppd_msg *) malloc(sizeof(struct ppd_msg) + sizeof(struct ppd_echo_arg));
+
+	if (msg == NULL) {
+		E("Can't allocate memory for msg\n");
+	}
+
+	if (options.master_mode) {
+		load.enable_delay = 0;
+	} else {
+		load.enable_delay = (uint32_t)conn->wgen->generate();
+	}
+	
+	msg->cmd = PPD_CECHO;
+	msg->dat_len = sizeof(struct ppd_echo_arg);
+	memcpy(msg->dat, &load, sizeof(struct ppd_echo_arg));
 	return msg;
 }
 
@@ -234,11 +306,16 @@ void kqconn_state_machine(struct kqconn *conn)
 					conn->next_send += (int)(conn->gen->generate() * 1000000.0);
 					conn->last_send = now;
 					conn->state = STATE_WAITING;
+					
+					/* here comes the nice "object model" */
+					struct ppd_msg *msg = options.create_msg(conn);
 
-					if (write_msg(conn->conn_fd, create_msg(conn)) < 0) {
+					if (write_msg(conn->conn_fd, msg) < 0) {
 						/* effectively skipping this packet */
 						W("Cannot write to connection %d\n", conn->conn_fd);
 					}
+
+					free(msg);
 					break;
 				}
 			}
@@ -339,34 +416,34 @@ worker_thread(int id, int notif_pipe, vector<struct datapt*> *data)
 				E("Connection %d connect() failed. Dropping. Err: %d\n", conn_fd, errno);
 			}
 
-			struct kqconn* english = new struct kqconn;
-
-			english->conn_fd = conn_fd;
-			english->timer = timer_start--;
-			english->kq = kq;
-			english->depth = 0;
-			english->conns = &conns;
-			english->next_send = 0;
-			english->timer_expired = 0;
-			english->state = STATE_WAITING;
-			english->stats = data;
-			english->gen = createGenerator(options.generator_name);
-			if (english->gen == NULL) {
+			struct kqconn* conn = new struct kqconn;
+			conn->conn_fd = conn_fd;
+			conn->timer = timer_start--;
+			conn->kq = kq;
+			conn->depth = 0;
+			conn->conns = &conns;
+			conn->next_send = 0;
+			conn->timer_expired = 0;
+			conn->state = STATE_WAITING;
+			conn->stats = data;
+			conn->gen = createGenerator(options.generator_name);
+			if (conn->gen == NULL) {
 				E("Unknown generator \"%s\"\n", options.generator_name);
 			}
-			english->wgen = createGenerator(options.wgen_name);
-			if (english->wgen == NULL) {
+			conn->wgen = createGenerator(options.wgen_name);
+			if (conn->wgen == NULL) {
 				E("Unknown generator \"%s\"\n", options.wgen_name);
 			}
-			english->gen->set_lambda((double)options.target_qps / (double)(options.client_thread_count * options.client_conn));
+			conn->gen->set_lambda((double)options.target_qps / (double)(options.client_thread_count * options.client_conn));
+			seed_rand(&conn->rseed, time(NULL) * id);
 
-			EV_SET(&ev[0], english->conn_fd, EVFILT_READ, EV_ADD, 0, 0, english);
-			EV_SET(&ev[1], english->timer, EVFILT_TIMER, EV_ADD | EV_ONESHOT, NOTE_USECONDS, 0, english);
+			EV_SET(&ev[0], conn->conn_fd, EVFILT_READ, EV_ADD, 0, 0, conn);
+			EV_SET(&ev[1], conn->timer, EVFILT_TIMER, EV_ADD | EV_ONESHOT, NOTE_USECONDS, 0, conn);
 			if (kevent(kq, ev, 2, NULL, 0, NULL) == -1) {
 				E("conn fd event kq reg problem");
 			}
 
-			conns.push_back(english);
+			conns.push_back(conn);
 			usleep(50);
 			break;
 		}
@@ -721,35 +798,35 @@ static void wait_master_prepare()
 
 void dump_options()
 {
-	if (options.verbose) {
-		fprintf(stdout,"Configuration:\n"
-			"        Connections per thread: %d\n"
-			"        Num threads: %d\n"
-			"        Target QPS: %d\n"
-			"        warmup: %d\n"
-			"        duration: %d\n"
-			"        master_mode: %d\n"
-			"        client_mode: %d\n"
-			"        output_file: %s\n"
-			"        server_ip: %s\n"
-			"        server_port: %d\n"
-			"        IA_DIST: %s\n"
-			"        master_server_ip: %s\n"
-			"        workload_type: %d\n",
-			options.client_conn,
-			options.client_thread_count,
-			options.target_qps,
-			options.warmup,
-			options.duration,
-			options.master_mode,
-			options.client_mode,
-			options.output_name,
-			options.server_ip,
-			options.server_port,
-			options.generator_name,
-			options.master_server_ip,
-			options.workload_type);
-	}
+	V ("Configuration:\n"
+		"        Connections per thread: %d\n"
+		"        Num threads: %d\n"
+		"        Target QPS: %d\n"
+		"        warmup: %d\n"
+		"        duration: %d\n"
+		"        master_mode: %d\n"
+		"        client_mode: %d\n"
+		"        output_file: %s\n"
+		"        server_ip: %s\n"
+		"        server_port: %d\n"
+		"        IA_DIST: %s\n"
+		"        master_server_ip: %s\n"
+		"        workload_type: %d\n"
+		"        update_ratio: %d\n",
+		options.client_conn,
+		options.client_thread_count,
+		options.target_qps,
+		options.warmup,
+		options.duration,
+		options.master_mode,
+		options.client_mode,
+		options.output_name,
+		options.server_ip,
+		options.server_port,
+		options.generator_name,
+		options.master_server_ip,
+		options.workload_type,
+		options.update_ratio);
 }
 
 static void usage() 
@@ -765,9 +842,11 @@ static void usage()
 					"    -v: verbose mode.\n"
 					"    -W: warm up time.\n"
 					"    -w: test duration.\n"
-					"    -l: workload type. ECHO(0), TOUCH(1). Default 0.\n"
-					"    -L: workload distribution. Default Fixed:64.\n"
 					"    -i: interarrival distribution. Default fb_ia. See mutilate.\n\n"
+					"    -l: workload type. ECHO(0), TOUCH(1). Default 0.\n\n"
+					"TOUCH workload specific:"
+					"    -L: items affected per request. Default Fixed:64.\n"
+					"    -u: update request ratio.\n\n"
 					"Master mode:\n"
 					"    -a: client addr.\n"
 					"    -A: client mode.\n"
@@ -799,7 +878,7 @@ main(int argc, char* argv[])
 	int ch;
 	FILE *resp_fp_csv;
 
-	while ((ch = getopt(argc, argv, "q:s:C:p:o:t:c:hvW:w:T:Aa:Q:i:S:l:L:")) != -1) {
+	while ((ch = getopt(argc, argv, "q:s:C:p:o:t:c:hvW:w:T:Aa:Q:i:S:l:L:u:")) != -1) {
 		switch (ch) {
 			case 'q':
 				options.target_qps = atoi(optarg);
@@ -865,6 +944,9 @@ main(int argc, char* argv[])
 				strncpy(options.master_server_ip, ip.c_str(), INET_ADDRSTRLEN);
 				break;
 			}
+			case 'u':
+				options.update_ratio = atoi(optarg);
+				break;
 			case 'h':
 			case '?':
 				usage();
@@ -940,7 +1022,20 @@ main(int argc, char* argv[])
 		wait_master_prepare();
 	}
 
+	/* here EVERYONE is on the same page */
 	dump_options();
+
+	/* yet more nice "object model" */
+	switch (options.workload_type) {
+		case WORKLOAD_ECHO:
+			options.create_msg = create_msg_echo;
+			break;
+		case WORKLOAD_TOUCH:
+			options.create_msg = create_msg_touch;
+			break;
+		default:
+			E("Unsupported workload type %d\n", options.workload_type);
+	}
 
 	vector<std::thread> threads;
 	vector<int> send_pipes;
@@ -1062,7 +1157,7 @@ main(int argc, char* argv[])
 		qps += client_stop();
 	}
 
-	V("Aggregated %d operations over %d seconds = \n", qps, options.duration);
+	V("Aggregated %d operations over %d seconds\n", qps, options.duration);
 	qps = qps / (options.duration);
 
 	if (!options.client_mode) {
