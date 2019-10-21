@@ -1,7 +1,0 @@
-# List names of disabled tests
-#bitmapalloc
-networkstream
-termui
-shell
-indirect
-filesys

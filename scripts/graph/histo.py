@@ -59,8 +59,8 @@ def process_dir(rootdir):
         each_dir = os.path.join(rootdir, subdir)
         if os.path.isfile(each_dir):
             if each_dir.endswith("sample.txt") or each_dir.endswith(".sample"):
-                executor.submit(process_file, each_dir)
-                #process_file(each_dir)
+                #executor.submit(process_file, each_dir)
+                process_file(each_dir)
         else:
             process_dir(each_dir)
 

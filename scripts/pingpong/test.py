@@ -27,11 +27,11 @@ root_dir = file_dir + "/../../"
 sample_filename = "sample.txt"
 
 sched = [
-	#"vanilla", -1,
+	"vanilla", -1,
 	#"cpu0_ws4", tc.make_sched_flag(tc.SCHED_CPU, 0, feat=tc.SCHED_FEAT_WS, fargs=4),
     #"cpu2_ws4", tc.make_sched_flag(tc.SCHED_CPU, 2, feat=tc.SCHED_FEAT_WS, fargs=2),
-	#"best2", tc.make_sched_flag(tc.SCHED_BEST, 2),
-	#"best2_ws2", tc.make_sched_flag(tc.SCHED_BEST, 2, feat=tc.SCHED_FEAT_WS, fargs=2),
+	"best2", tc.make_sched_flag(tc.SCHED_BEST, 2),
+	"best2_ws4", tc.make_sched_flag(tc.SCHED_BEST, 2, feat=tc.SCHED_FEAT_WS, fargs=4),
 	#"queue0", tc.make_sched_flag(tc.SCHED_QUEUE, 0),
 	#"q0_ws4", tc.make_sched_flag(tc.SCHED_QUEUE, 0, feat=tc.SCHED_FEAT_WS, fargs=4),
 	#"queue2", tc.make_sched_flag(tc.SCHED_QUEUE, 2),
@@ -53,7 +53,7 @@ duration = 10
 cooldown = 0
 conn_per_thread = 12
 server_delay = False
-conn_delay = False
+conn_delay = True
 priority = False
 
 hostfile = None
