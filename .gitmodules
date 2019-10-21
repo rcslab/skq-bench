@@ -1,0 +1,3 @@
+[submodule "Celestis"]
+	path = Celestis
+	url = ssh://vcs@review.rcs.uwaterloo.ca:77/source/Celestis.git
