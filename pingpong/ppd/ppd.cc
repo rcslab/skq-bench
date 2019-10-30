@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <string.h>
+#include <stdalign.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <err.h>
@@ -13,21 +14,21 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <pthread_np.h>
-#include <random>
 #include <sys/types.h>
 #include <sys/sysctl.h>
-#include <vector>
-#include <set>
 #include <netdb.h>
+#include <vector>
 #include <sstream>
 
-#include "../common.h"
+#include <common.h>
+#include <ppd/msg.h>
 
-using namespace std;
+/* I don't even know if this is a C or C++ thing. */
 
-#define NEVENT (256)
-#define SOCK_BACKLOG (10000)
-#define SINGLE_LEGACY (-1)
+static constexpr int NEVENT = 256;
+static constexpr int SOCK_BACKLOG = 10000;
+static constexpr int SINGLE_LEGACY = -1;
+static constexpr int DEFAULT_PORT = 9898;
 
 struct server_option {
 	int threads;
@@ -37,12 +38,8 @@ struct server_option {
 	int cpu_affinity;
 	int skq_dump;
 	int verbose;
-	
-	/* only applies to ECHO requests */
-	int delay;
-	int conn_delay;
 
-	vector<char*> hpip;
+	std::vector<char*> hpip;
 	int kq_rtshare;
 	int kq_tfreq;
 	
@@ -50,40 +47,36 @@ struct server_option {
 	int table_sz;
 };
 
-struct cache_item {
+struct alignas(CACHE_LINE_SIZE) cache_item {
 	int val;
-	char _pad[CACHE_LINE_SIZE - sizeof(int)];
 };
-_Static_assert(sizeof(struct cache_item) == CACHE_LINE_SIZE, "cache_item not cache line sized");
+static_assert(sizeof(struct cache_item) == CACHE_LINE_SIZE, "cache_item not cache line sized");
 
 struct conn_hint {
-	int delay;
 	struct cache_item *items;
 };
 
-struct worker_thread {
+struct alignas(CACHE_LINE_SIZE) worker_thread {
 	pthread_t thrd;
 	int kqfd;
 	long evcnt;
 	int id;
-	char _pad[64];
 };
+static_assert(sizeof(struct worker_thread) == CACHE_LINE_SIZE, "worker_thread not cache line sized");
 
 struct server_option options = {.threads = 1, 
-								.port = DEFAULT_SERVER_CLIENT_CONN_PORT, 
+								.port = DEFAULT_PORT, 
 								.skq = 0,
 								.skq_flag = 0, 
 								.cpu_affinity = 0,
 								.skq_dump = 0,
 								.verbose = 0,
-								.delay = 0,
-								.conn_delay = 0,
 								.kq_rtshare = 100,
 								.kq_tfreq = 0,
 								.table_sz = 64};
 
-/* XXX: legacy stuff */
-static const int enable = 1;
+static const struct ppd_msg GENERIC_REPLY = { .cmd = PPD_CRESP,
+											  .dat_len = 0 };
 
 /* cpu assignment */
 static int ncpu = 0;
@@ -99,10 +92,11 @@ conn_hint_destroy(struct conn_hint *hint)
 }
 
 static void 
-server_socket_prepare(vector<int> *socks) 
+server_socket_prepare(std::vector<int> *socks) 
 {
 	struct sockaddr_in server_addr;
 	int status;
+	const int enable = 1;
 	server_addr.sin_family = AF_INET;
 	server_addr.sin_port = htons(options.port);
 	server_addr.sin_addr.s_addr = INADDR_ANY;
@@ -161,42 +155,6 @@ drop_conn(struct worker_thread *tinfo, struct kevent *kev)
 	conn_hint_destroy((struct conn_hint *)kev->udata);
 }
 
-static void
-build_delay_table(vector<int> *tbl)
-{
-	/* 95 + 4 + 1 = 100 */
-
-	tbl->push_back(200);
-
-	for(int i = 0; i < 4; i++) {
-		tbl->push_back(50);
-	}
-
-	for(int i = 0; i < 95; i++) {
-		tbl->push_back(20);
-	}
-}
-
-#define RM (1000)
-static int 
-get_next_delay()
-{
-	int r = rand() % RM;
-	if (r <= RM / 100 * 95) {
-		/* 95% low */
-		return 20;
-	} else if (r <= RM / 100 * 99) {
-		/* 4% mid */
-		return 50;
-	} else {
-		/* 1% high */
-		return 200;
-	}
-}
-
-static const struct ppd_msg GENERIC_REPLY = { .cmd = PPD_CRESP,
-									.dat_len = 0 };
-
 static int
 handle_event(struct worker_thread *tinfo, struct kevent* kev)
 {
@@ -239,13 +197,8 @@ handle_event(struct worker_thread *tinfo, struct kevent* kev)
 			struct ppd_echo_arg *arg = (struct ppd_echo_arg*)&msg->dat[0];
 
 			if (arg->enable_delay) {
-				uint64_t server_delay = 0;
+				uint64_t server_delay = arg->enable_delay;
 				uint64_t now = get_time_us();
-				if (options.delay) {
-					server_delay = get_next_delay();
-				} else if (options.conn_delay) {
-					server_delay = hint->delay;
-				}
 
 				V("Conn %d Thread %d delaying for %ld...\n", conn_fd, tinfo->id, server_delay);
 				while (get_time_us() - now <= server_delay) {};
@@ -264,8 +217,6 @@ handle_event(struct worker_thread *tinfo, struct kevent* kev)
 				W("Connection %d invalid touch request\n", conn_fd);
 				break;
 			}
-
-
 
 			/* XXX: not cross-endianess */
 			struct ppd_touch_arg *arg = (struct ppd_touch_arg*)&msg->dat[0];
@@ -337,24 +288,22 @@ work_thread(void *info)
 
 void dump_options()
 {
-	stringstream ss;
+	std::stringstream ss;
 	ss << "Configuration:\n"
-	   << "        worker threads: " << options.threads << endl
-	   << "        port: " << options.port << endl
-	   << "        single KQ: " << options.skq << endl
-	   << "        single KQ flags: " << options.skq_flag << endl
-	   << "        single KQ dump:" << options.skq_dump << endl
-	   << "        CPU affinity: " << options.cpu_affinity << endl
-	   << "        verbose: " << options.verbose << endl
-	   << "        generic delay: " << options.delay << endl
-	   << "        connection delay: " << options.conn_delay << endl
-	   << "        kq_rtshare: " << options.kq_rtshare << endl
-	   << "        kq_tfreq: " << options.kq_tfreq << endl
-	   << "        connection item size: " << options.table_sz << endl
-	   << "        priority client IPs (" << options.hpip.size() << "): " << endl;
+	   << "        worker threads: " << options.threads << std::endl
+	   << "        port: " << options.port << std::endl
+	   << "        single KQ: " << options.skq << std::endl
+	   << "        single KQ flags: " << options.skq_flag << std::endl
+	   << "        single KQ dump:" << options.skq_dump << std::endl
+	   << "        CPU affinity: " << options.cpu_affinity << std::endl
+	   << "        verbose: " << options.verbose << std::endl
+	   << "        kq_rtshare: " << options.kq_rtshare << std::endl
+	   << "        kq_tfreq: " << options.kq_tfreq << std::endl
+	   << "        cache item size: " << options.table_sz << std::endl
+	   << "        priority client IPs (" << options.hpip.size() << "): " << std::endl;
 
 	for(uint i = 0; i < options.hpip.size(); i++) {
-		ss << "                " << options.hpip.at(i) << endl;
+		ss << "                " << options.hpip.at(i) << std::endl;
 	}
 
 	V("%s", ss.str().c_str());
@@ -371,8 +320,6 @@ usage()
 		   "    d: SKQ dump interval (s)\n"
 		   "    t: number of server threads\n"
 		   "    h: show help\n"
-		   "    D: enable simulated delay, overwrites -c\n"
-		   "    c: enable per-connection delay\n"
 		   "    r: realtime client hostname\n"
 		   "    R: realtime share\n"
 		   "    F: kqueue frequency\n"
@@ -426,7 +373,7 @@ get_next_cpu()
 
 
 static void
-create_workers(int kq, vector<struct worker_thread*> *thrds)
+create_workers(int kq, std::vector<struct worker_thread*> *thrds)
 {
 	int status;
 
@@ -434,7 +381,7 @@ create_workers(int kq, vector<struct worker_thread*> *thrds)
 	for (int i = 0; i < options.threads; i++) {
 		V("Creating worker thread %d...\n", i);
 
-		struct worker_thread *thrd = new worker_thread;
+		struct worker_thread *thrd = (struct worker_thread *)aligned_alloc(CACHE_LINE_SIZE, sizeof(struct worker_thread));
 		thrd->evcnt = 0;
 		thrd->id = i;
 		
@@ -517,18 +464,15 @@ main(int argc, char *argv[])
 	int kq = -1;
 	int status;
 	char ch;
-	vector<struct worker_thread *> wrk_thrds;
-    vector<int> server_socks;
+	std::vector<struct worker_thread *> wrk_thrds;
+    std::vector<int> server_socks;
 
 #ifdef FKQMULTI
 	char dbuf[1024 * 1024 + 1];
 #endif
 	
-	while ((ch = getopt(argc, argv, "Dd:p:at:m:vhcr:R:F:M:")) != -1) {
+	while ((ch = getopt(argc, argv, "d:p:at:m:vhr:R:F:M:")) != -1) {
 		switch (ch) {
-			case 'D':
-				options.delay = 1;
-				break;
 			case 'd':
 				options.skq_dump = atoi(optarg);
 				break;
@@ -551,9 +495,6 @@ main(int argc, char *argv[])
 			case 'v':
 				options.verbose = 1;
 				W("Verbose mode can cause SUBSTANTIAL latency fluctuations in some terminals!\n");
-				break;
-			case 'c':
-				options.conn_delay = 1;
 				break;
 			case 'r': {
 				char* eip = new char[INET_ADDRSTRLEN + 1];
@@ -638,15 +579,6 @@ main(int argc, char *argv[])
 #endif
 	}
 
-	/* delay distribution table */
-	vector<int> dist_table;
-	int dist_table_idx = 0;
-
-	if (options.conn_delay) {
-		V("Building delay distribution table...\n");
-		build_delay_table(&dist_table);
-	}
-
 	srand(time(NULL));
 	create_workers(kq, &wrk_thrds);
 	V("Entering main event loop...\n");
@@ -685,9 +617,12 @@ main(int argc, char *argv[])
 			continue;
 		}
 
-		if (setsockopt(conn_fd, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(enable)) < 0) {
-			W("setsockopt() failed on socket %d\n", conn_fd);
-			continue;
+		{
+			const int enable = 1;
+			if (setsockopt(conn_fd, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(enable)) < 0) {
+				W("setsockopt() failed on socket %d\n", conn_fd);
+				continue;
+			}
 		}
 
 		char ipaddr[INET_ADDRSTRLEN + 1];
@@ -711,12 +646,6 @@ main(int argc, char *argv[])
 		}
 
 		int target_kq = wrk_thrds.at(cur_thread)->kqfd;
-
-		if (options.conn_delay) {
-			hint->delay = dist_table[dist_table_idx % dist_table.size()];
-			dist_table_idx++;
-			V("Assigned connection %d delay %d us\n", conn_fd, hint->delay);
-		}
 
 		int ev_flags = EV_ADD;
 
