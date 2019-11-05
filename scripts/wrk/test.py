@@ -14,9 +14,9 @@ import memparse as mp
 import libtc as tc
 
 step_inc_pct = 100
-init_step = 100000 #
-
-term_pct = 5
+init_step = 10000 #
+server_port = 8123
+term_pct = 1
 inc_pct = 50
 
 # paths
@@ -26,17 +26,19 @@ root_dir = file_dir + "/../../"
 sample_filename = "sample.txt"
 
 sched = [
+	"cpu0", tc.make_sched_flag(tc.SCHED_CPU, 0),
+	"q0_ws4", tc.make_sched_flag(tc.SCHED_QUEUE, 0, feat=tc.SCHED_FEAT_WS, fargs=4),
 	"vanilla", -1,
 	"queue0", tc.make_sched_flag(tc.SCHED_QUEUE, 0),
-	"q0_ws4", tc.make_sched_flag(tc.SCHED_QUEUE, 0, feat=tc.SCHED_FEAT_WS, fargs=4),
-	"queue2", tc.make_sched_flag(tc.SCHED_QUEUE, 2),
-	"q2_ws4", tc.make_sched_flag(tc.SCHED_QUEUE, 2, feat=tc.SCHED_FEAT_WS, fargs=4),
-	"cpu0", tc.make_sched_flag(tc.SCHED_CPU, 0),
 	"cpu0_ws4", tc.make_sched_flag(tc.SCHED_CPU, 0, feat=tc.SCHED_FEAT_WS, fargs=4),
-	"cpu2", tc.make_sched_flag(tc.SCHED_CPU, 2),
-    "cpu2_ws4", tc.make_sched_flag(tc.SCHED_CPU, 2, feat=tc.SCHED_FEAT_WS, fargs=4),
+    "cpu2_ws4", tc.make_sched_flag(tc.SCHED_CPU, 2, feat=tc.SCHED_FEAT_WS, fargs=2),
 	"best2", tc.make_sched_flag(tc.SCHED_BEST, 2),
 	"best2_ws4", tc.make_sched_flag(tc.SCHED_BEST, 2, feat=tc.SCHED_FEAT_WS, fargs=4),
+	"q0_ws4", tc.make_sched_flag(tc.SCHED_QUEUE, 0, feat=tc.SCHED_FEAT_WS, fargs=4),
+	"queue2", tc.make_sched_flag(tc.SCHED_QUEUE, 2),
+	"q2_ws4", tc.make_sched_flag(tc.SCHED_QUEUE, 2, feat=tc.SCHED_FEAT_WS, fargs=2),
+	"cpu0_ws4", tc.make_sched_flag(tc.SCHED_CPU, 0, feat=tc.SCHED_FEAT_WS, fargs=4),
+	"cpu2", tc.make_sched_flag(tc.SCHED_CPU, 2),
 	#"rand", make_sched_flag(0, 0),
 ]
 
@@ -44,20 +46,17 @@ master = ["skylake2"]
 server = ["skylake1"]
 clients = ["skylake3", "skylake4", "skylake5", "skylake6", "skylake7", "skylake8"]
 
-threads = 12
+threads = 1
 client_threads = 12
 warmup = 5
 duration = 10
 cooldown = 0
-conn_per_thread = 12
-server_delay = False
-conn_delay = True
-priority = False
+conn_per_thread = 8
 
 hostfile = None
-dump = False
 lockstat = False
 client_only = False
+dump = False
 
 def stop_all():
 	# stop clients
@@ -67,7 +66,8 @@ def stop_all():
 	if not client_only:
 		# stop server
 		tc.log_print("Stopping server...")
-		tc.remote_exec(server, "killall -9 ppd", check=False)
+		tc.remote_exec(server, "sudo killall -9 httpd", check=False)
+		tc.remote_exec(server, "sudo killall -9 lockstat", check=False)
 
 	# stop master
 	tc.log_print("Stopping master...")
@@ -86,12 +86,16 @@ def run_exp(sc, ld, lstat):
 		else:
 			# start server
 			tc.log_print("Starting server...")
-			server_cmd = test_dir + "/http/build/tools/httpd/httpd -w " + str(thread) + "-d " + test_dir + "/wrk/index.html "
-			if sc != -1: 
-			    server_cmd += " -m " + str(sc)
-
+			server_cmd = test_dir + "/celestis/build/tools/httpd/httpd -l -a -w " + str(threads) + " -p " + str(server_port) + " -d " + test_dir + "/scripts/wrk/"
+			
 			if lstat:
 				server_cmd = "sudo lockstat -A -P -s4 -n16777216 " + server_cmd
+
+			if sc != -1:
+				server_cmd = server_cmd + " -m " + str(sc)
+
+			if dump:
+				server_cmd = server_cmd + " -D "
 
 			tc.log_print(server_cmd)
 
@@ -99,27 +103,28 @@ def run_exp(sc, ld, lstat):
 
 		# start clients
 		tc.log_print("Starting clients...")
-		client_cmd = tc.get_cpuset_core(client_threads) + " " + test_dir + "/wrk/dm/dismember -A"
+		client_cmd = tc.get_cpuset_core(client_threads) + " " + test_dir + "/pingpong/dismember/dismember -A"
 		tc.log_print(client_cmd)
 		sclt = tc.remote_exec(clients, client_cmd, blocking=False)
 
 		time.sleep(1)
 		# start master
 		tc.log_print("Starting master...")
-		master_cmd = tc.get_cpuset_core(client_threads) + " " + test_dir + "/wrk/dm/dismember " + \
+		master_cmd = tc.get_cpuset_core(client_threads) + " " + test_dir + "/pingpong/dismember/dismember " + \
 			                  get_client_str(clients) + \
 							  " -s " + server[0] + \
 							  " -q " + str(ld) + \
-                                                          " -p 19999" + \
+                              " -p " + str(server_port) + \
 							  " -c " + str(conn_per_thread) + \
 							  " -o " + test_dir + "/" + sample_filename + \
 							  " -t " + str(client_threads) + \
 							  " -w " + str(duration) + \
 							  " -W " + str(warmup) + \
                               " -T " + str(client_threads) + \
-							  " -i exponential " + \
+							  " -i fb_ia " + \
 							  " -C " + str(conn_per_thread) + \
-							  " -Q 1000 "
+							  " -Q 1000 " + \
+							  " -l 2 "
 
 		tc.log_print(master_cmd)
 		sp = tc.remote_exec(master, master_cmd, blocking=False)
@@ -207,7 +212,7 @@ def keep_results(output, sout, serr):
 		f = open(tc.get_odir() + "/l" + str(int(avg_qps))  + ".lstat", "w")
 		f.write(serr)
 		f.close()
-	
+
 	if dump and len (sout) > 0:
 		f = open(tc.get_odir() + "/l" + str(int(avg_qps)) + ".kstat", "w")
 		f.write(sout)
@@ -219,13 +224,11 @@ def main():
 	global hostfile
 	global server
 	global clients
-	global dump
 	global lockstat
 	global client_only
-	global server_delay
-	global priority
+	global dump
 
-	options = getopt.getopt(sys.argv[1:], 'h:sldcDp')[0]
+	options = getopt.getopt(sys.argv[1:], 'h:slcD')[0]
 	for opt, arg in options:
 		if opt in ('-h'):
 			hostfile = arg
@@ -234,25 +237,17 @@ def main():
 			return
 		elif opt in ('-l'):
 			lockstat=True
-		elif opt in ('-d'):
-			dump=True
 		elif opt in ('-c'):
 			client_only=True
 		elif opt in ('-D'):
-			server_delay=True
-		elif opt in ('-p'):
-			priority=True
+			dump=True
 
-	tc.init(str(threads) + "+" + str(len(clients)) + "x" + str(client_threads) + "x" + str(conn_per_thread))
+	tc.init("~/results.d/wrk/" + str(threads) + "+" + str(len(clients)) + "x" + str(client_threads) + "x" + str(conn_per_thread))
 
 	tc.log_print("Configuration:\n" + \
-		  "Hostfile: " + ("None" if hostfile == None else hostfile) + "\n" \
-		  "Lockstat: " + str(lockstat) + "\n" \
-		  "KQ dump: " + str(dump) + "\n" \
-		  "Client only: " + str(client_only) + "\n" + \
-		  "Server delay: " + str(server_delay) + "\n" + \
-		  "Conn delay: " + str(conn_delay) + "\n"
-		  "Priority: " + str(priority) + "\n")
+		"Hostfile: " + ("None" if hostfile == None else hostfile) + "\n" \
+		"Lockstat: " + str(lockstat) + "\n" \
+		"Client only: " + str(client_only) + "\n")
 
 	if hostfile != None:
 		hosts = tc.parse_hostfile(hostfile)
@@ -271,6 +266,11 @@ def main():
 
 		tc.begin(ename)
 
+		tc.log_print("============ Sched: " + str(ename) + " Flag: " + format(esched, '#04x') + " Load: MAX" + " ============")
+		output, sout, serr = run_exp(esched, 0, lockstat)
+		keep_results(output, sout, serr)
+		stop_all()
+		
 		while True:
 			tc.log_print("============ Sched: " + str(ename) + " Flag: " + format(esched, '#04x') + " Load: " + str(cur_load) + " ============")
 

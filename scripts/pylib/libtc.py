@@ -16,16 +16,17 @@ def log_print(info):
 		tc_logfile.write(info + "\n")
 		tc_logfile.flush()
 
-tc_output_dir="results.d/"
+tc_output_dir=""
 tc_cur_test = ""
 tc_test_id = 0
 
-def init(id):
+def init(odir = "./results.d/"):
 	global tc_output_dir
-	tc_output_dir = tc_output_dir + datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S') + "_" + id
+	tc_output_dir = odir + "_" + datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+	tc_output_dir = os.path.expanduser(tc_output_dir)
 	os.system("mkdir -p " + tc_output_dir)
 	global tc_logfile
-	tc_logfile = open(tc_output_dir + "/log.txt", "w")
+	tc_logfile = open(tc_output_dir + "/log.txt", "w+")
 
 def begin(name):
 	global tc_test_id

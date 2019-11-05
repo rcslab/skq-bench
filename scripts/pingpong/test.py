@@ -28,17 +28,17 @@ sample_filename = "sample.txt"
 
 sched = [
 	"vanilla", -1,
-	#"cpu0_ws4", tc.make_sched_flag(tc.SCHED_CPU, 0, feat=tc.SCHED_FEAT_WS, fargs=4),
-    #"cpu2_ws4", tc.make_sched_flag(tc.SCHED_CPU, 2, feat=tc.SCHED_FEAT_WS, fargs=2),
+	"queue0", tc.make_sched_flag(tc.SCHED_QUEUE, 0),
+	"cpu0_ws4", tc.make_sched_flag(tc.SCHED_CPU, 0, feat=tc.SCHED_FEAT_WS, fargs=4),
+    "cpu2_ws4", tc.make_sched_flag(tc.SCHED_CPU, 2, feat=tc.SCHED_FEAT_WS, fargs=2),
 	"best2", tc.make_sched_flag(tc.SCHED_BEST, 2),
 	"best2_ws4", tc.make_sched_flag(tc.SCHED_BEST, 2, feat=tc.SCHED_FEAT_WS, fargs=4),
-	#"queue0", tc.make_sched_flag(tc.SCHED_QUEUE, 0),
-	#"q0_ws4", tc.make_sched_flag(tc.SCHED_QUEUE, 0, feat=tc.SCHED_FEAT_WS, fargs=4),
-	#"queue2", tc.make_sched_flag(tc.SCHED_QUEUE, 2),
-	#"q2_ws4", tc.make_sched_flag(tc.SCHED_QUEUE, 2, feat=tc.SCHED_FEAT_WS, fargs=2),
+	"q0_ws4", tc.make_sched_flag(tc.SCHED_QUEUE, 0, feat=tc.SCHED_FEAT_WS, fargs=4),
+	"queue2", tc.make_sched_flag(tc.SCHED_QUEUE, 2),
+	"q2_ws4", tc.make_sched_flag(tc.SCHED_QUEUE, 2, feat=tc.SCHED_FEAT_WS, fargs=2),
 	"cpu0", tc.make_sched_flag(tc.SCHED_CPU, 0),
-	#"cpu0_ws4", tc.make_sched_flag(tc.SCHED_CPU, 0, feat=tc.SCHED_FEAT_WS, fargs=4),
-	#"cpu2", tc.make_sched_flag(tc.SCHED_CPU, 2),
+	"cpu0_ws4", tc.make_sched_flag(tc.SCHED_CPU, 0, feat=tc.SCHED_FEAT_WS, fargs=4),
+	"cpu2", tc.make_sched_flag(tc.SCHED_CPU, 2),
 	#"rand", make_sched_flag(0, 0),
 ]
 
@@ -258,7 +258,7 @@ def main():
 		elif opt in ('-p'):
 			priority=True
 
-	tc.init(str(threads) + "+" + str(len(clients)) + "x" + str(client_threads) + "x" + str(conn_per_thread))
+	tc.init("~/results.d/pingpong/" + str(threads) + "+" + str(len(clients)) + "x" + str(client_threads) + "x" + str(conn_per_thread))
 
 	tc.log_print("Configuration:\n" + \
 		  "Hostfile: " + ("None" if hostfile == None else hostfile) + "\n" \

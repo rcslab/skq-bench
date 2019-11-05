@@ -19,9 +19,9 @@ compile() {
     $ssh_cmd $1 "cd $test_dir/memcached; ./configure ; make clean; make all" &
     $ssh_cmd $1 "rm -rf $test_dir/evcompat/build; mkdir -p $test_dir/evcompat/build; cd $test_dir/evcompat/build; cmake ../; make"
     $ssh_cmd $1 "cd $test_dir/mem; ./configure ;make clean; make all" &
-    $ssh_cmd $1 "cd $test_dir/wrk; make clean; make" &
-    $ssh_cmd $1 "cd $test_dir/wrk/wrk2_src; gmake clean; gmake" &
-    $ssh_cmd $1 "cd $test_dir/http; scons -c; scons" &
+    if [ "$1" = "skylake1" ]; then
+        $ssh_cmd $1 "cd $test_dir/celestis; scons -c; scons -j 16 " &
+    fi;
     wait
     echo "$1 Done."
     echo ""

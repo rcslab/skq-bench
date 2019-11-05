@@ -12,7 +12,7 @@ init() {
     echo "====================$1===================="
     echo "Performing initial setup..."
     $ssh_cmd $1 "echo y | \
-               sudo pkg install gmake libsodium bash git dtrace-toolkit autotools gcc cmake scons libevent gengetopt rsync libzmq4; \
+               sudo pkg install gmake libsodium bash git dtrace-toolkit autotools gcc cmake libevent gengetopt rsync libzmq4; \
                sudo chmod 777 /tmp; \
                sudo rm -rf /tmp/cppzmq; \
                sudo rm -rf $test_dir; \
