@@ -8,8 +8,6 @@
 #ifndef GENERATOR_H
 #define GENERATOR_H
 
-#define MAX(a,b) ((a) > (b) ? (a) : (b))
-
 #include <netinet/in.h>
 
 #include <string>
@@ -23,6 +21,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/param.h>
 
 #include "util.h"
 #define D(fmt, ...) 

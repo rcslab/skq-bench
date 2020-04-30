@@ -1,12 +1,14 @@
-#ifndef COMMON_H
-#define COMMON_H
+#pragma once
 
+#include "const.h"
+#include <cerrno>
 #include <sys/ioctl.h>
 #include <sys/event.h>
 #include <stdint.h>
 #include <sys/socket.h>
 #include <thread>
 #include <stdio.h>
+#include <sys/param.h>
 
 #define W(fmt, ...) do { \
 	fprintf(stderr, "[WARN] " fmt, ##__VA_ARGS__); \
@@ -34,7 +36,7 @@ readbuf(int fd, void *buf, int len)
 		} else if (status == 0) { // connection disconnected.
 			return -1;
 		}
-		buf = ((uint8_t *)buf) + status;
+		buf = (char*)buf + status;
 		len -= status;
 	} while (len > 0);
 
@@ -42,25 +44,62 @@ readbuf(int fd, void *buf, int len)
 }
 
 static inline int
-writebuf(int fd, const void *buf, int len)
+writebuf(int fd, void * buf, int len)
 {
 	int status;
 
 	do {
 		if ((status = send(fd, buf, len, 0)) < 0) {
-			perror("send");
 			return -1;
 		} else if (status == 0) {
 			return -1;
 		}
-		buf = ((uint8_t *)buf) + status;
+		buf = (char*) buf + status;
 		len -= status;
 	} while (len > 0);
 
 	return 0;
 }
 
+static inline int 
+readmsg(int fd, char *buf, int len)
+{
+	if ((uint)len < sizeof(struct ppd_msg)) {
+		return EOVERFLOW;
+	}
 
+	int status = readbuf(fd, buf, sizeof(struct ppd_msg));
+
+	if (status != 0) {
+		return status;
+	}
+
+	if (((struct ppd_msg *)buf)->size + sizeof(ppd_msg) > (uint)len) {
+		return EOVERFLOW;
+	}
+
+	if (((struct ppd_msg *)buf)->size > 0) {
+		status = readbuf(fd, buf + sizeof(ppd_msg), ((struct ppd_msg *)buf)->size);
+	}
+	
+	return status;
+}
+
+static inline int
+writemsg(int fd, char *buf, int len, const char *msg, int mlen)
+{
+	int real_len = sizeof(struct ppd_msg) + mlen;
+	if (len < real_len) {
+		return EOVERFLOW;
+	}
+
+	struct ppd_msg * m = (struct ppd_msg *)buf;
+	memmove(m->payload, msg, mlen);
+
+	m->size = mlen;
+
+	return writebuf(fd, buf, real_len);
+}
 
 static inline int 
 get_numcpus()
@@ -77,4 +116,4 @@ get_time_us()
   	return ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
 }
 
-#endif
+#define UNUSED(x) (x)

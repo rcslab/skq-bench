@@ -19,8 +19,8 @@
 #include <set>
 #include <unordered_map>
 
-#include <common.h>
-#include <ppd/msg.h>
+#include <const.h>
+#include <util.h>
 #include "Generator.h"
 #include "reqgen.h"
 #include "options.h"
@@ -95,6 +95,9 @@ req_gen * create_rgen(WORKLOAD_TYPE type, const int conn_id, std::unordered_map<
 		case WORKLOAD_TYPE::HTTP :
 			return new http_gen(conn_id, std::string(options.server_ip) + ":" + std::to_string(options.server_port) ,args);
 			break;
+		case WORKLOAD_TYPE::RDB :
+			return new rdb_gen(conn_id, args);
+			break;
 		default:
 			E("Unsupported workload type %d\n", type);
 	}
@@ -103,7 +106,6 @@ req_gen * create_rgen(WORKLOAD_TYPE type, const int conn_id, std::unordered_map<
 void parse_rgen_params()
 {
 	char * saveptr;
-
 
 	for (int i = 0; i < options.num_gen_params; i++) {
 		saveptr = NULL;
@@ -679,7 +681,7 @@ static void usage()
 					"    -W: warm up time.\n"
 					"    -w: test duration.\n"
 					"    -i: interarrival distribution. Default fb_ia. See mutilate.\n"
-					"    -l: workload type. ECHO(0), TOUCH(1), HTTP(2). Default 0.\n"
+					"    -l: workload type. ECHO(0), TOUCH(1), RDB(2), HTTP(3). Default 0.\n"
 					"    -O: workload specific parameters. Format: param=value. E.g. -Otsala=patis.\n\n"
 					"Master mode:\n"
 					"    -a: client addr.\n"
@@ -696,6 +698,8 @@ static void usage()
 					"        GEN: the generator for items touched per request. Default fixed:64.\n"
 					"        UPDATE: the update ratio of request. Default 0.\n"
 					"    HTTP:\n"
+					"        N/A\n"
+					"    RDB:\n"
 					"        N/A\n\n");
 }
 
@@ -887,7 +891,7 @@ main(int argc, char* argv[])
 		recv_pipes[i] = pipes[1];
 	
 		thrd_perf_counters.push_back(perf);
-		threads.push_back(thread(worker_thread, i, pipes[1], &data[i]));
+		threads.push_back(std::thread(worker_thread, i, pipes[1], &data[i]));
 	}
 
 	V("Waiting for thread connection establishment.\n");

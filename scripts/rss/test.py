@@ -14,7 +14,7 @@ import memparse as mp
 import libtc as tc
 
 step_inc_pct = 100
-init_step = 60000 #
+init_step = 50000 #
 
 term_pct = 1
 inc_pct = 50
@@ -27,8 +27,9 @@ root_dir = file_dir + "/../../"
 sample_filename = "sample.txt"
 
 sched = [
-	#"vanilla", -1,
-	#"queue0", tc.make_sched_flag(tc.SCHED_QUEUE, 0),
+	"vanilla", -1,
+	"queue0", tc.make_sched_flag(tc.SCHED_QUEUE, 0),
+	"cpu0", tc.make_sched_flag(tc.SCHED_CPU, 0),
 	#"cpu0_ws4", tc.make_sched_flag(tc.SCHED_CPU, 0, feat=tc.SCHED_FEAT_WS, fargs=4),
     #"cpu2_ws4", tc.make_sched_flag(tc.SCHED_CPU, 2, feat=tc.SCHED_FEAT_WS, fargs=4),
 	#"best2", tc.make_sched_flag(tc.SCHED_BEST, 2),
@@ -36,43 +37,49 @@ sched = [
 	#"q0_ws4", tc.make_sched_flag(tc.SCHED_QUEUE, 0, feat=tc.SCHED_FEAT_WS, fargs=4),
 	#"queue2", tc.make_sched_flag(tc.SCHED_QUEUE, 2),
 	#"q2_ws4", tc.make_sched_flag(tc.SCHED_QUEUE, 2, feat=tc.SCHED_FEAT_WS, fargs=4),
-	"cpu0", tc.make_sched_flag(tc.SCHED_CPU, 0),
 	#"cpu0_ws4", tc.make_sched_flag(tc.SCHED_CPU, 0, feat=tc.SCHED_FEAT_WS, fargs=4),
 	#"cpu2", tc.make_sched_flag(tc.SCHED_CPU, 2),
 	#"rand", make_sched_flag(0, 0),
 ]
 
 master = ["skylake2"]
+ssh_master = master.copy()
+
 server = ["skylake1"]
-clients = ["skylake3", "skylake4", "skylake5", "skylake6", "skylake7"]
+ssh_server = server.copy()
+
+clients = ["skylake3", "skylake5", "skylake6", "skylake7", "skylake8"]
+ssh_clients = clients.copy()
 
 threads = 12
-client_threads = 12
+client_threads = threads
 warmup = 5
 duration = 10
 cooldown = 0
+cacheline = 0
 conn_per_thread = 12
 conn_delay = False
-priority = False
+pmcstat = False
+pmc_sys = True
 
 hostfile = None
 dump = False
-lockstat = False
+lockstat = True
 client_only = False
 
 def stop_all():
 	# stop clients
 	tc.log_print("Stopping clients...")
-	tc.remote_exec(clients, "killall -9 dismember", check=False)
+	tc.remote_exec(ssh_clients, "sudo killall -9 dismember", check=False)
 
 	if not client_only:
 		# stop server
 		tc.log_print("Stopping server...")
-		tc.remote_exec(server, "killall -9 ppd", check=False)
+		tc.remote_exec(ssh_server, "sudo killall -9 ppd", check=False)
 
 	# stop master
 	tc.log_print("Stopping master...")
-	tc.remote_exec(master, "killall -9 dismember", check=False)
+	tc.remote_exec(ssh_master, "sudo killall -9 dismember", check=False)
 
 def get_client_str(clt):
 	ret = " "
@@ -89,26 +96,26 @@ def run_exp(sc, ld, lstat):
 			tc.log_print("Starting server...")
 			server_cmd = test_dir + "/pingpong/ppd/ppd -a -t " + str(threads) + " -p " + str(server_port)
 
-			if priority:
-				server_cmd += " -F 10000 -r " + master[0] + " "
+			if pmcstat:
+				server_cmd = "sudo pmc stat" + ("-system" if pmc_sys else "") + " " + test_dir + \
+					"/pingpong/ppd/ppd -- -a -t" + str(threads) + " -p " + str(server_port) + " -M " + str(cacheline)
 
 			if lstat:
-				server_cmd = "sudo lockstat -A -P -s4 -n16777216 " + server_cmd
+				server_cmd = "sudo lockstat -A -P -n65536 " + server_cmd
 
 			if sc != -1:
 				server_cmd = server_cmd + " -m " + str(sc)
 				if dump:
 					server_cmd += " -d 1 "
-					
 			tc.log_print(server_cmd)
 
-			ssrv = tc.remote_exec(server, server_cmd, blocking=False)
+			ssrv = tc.remote_exec(ssh_server, server_cmd, blocking=False)
 
 		# start clients
 		tc.log_print("Starting clients...")
 		client_cmd = tc.get_cpuset_core(client_threads) + " " + test_dir + "/pingpong/dismember/dismember -A"
 		tc.log_print(client_cmd)
-		sclt = tc.remote_exec(clients, client_cmd, blocking=False)
+		sclt = tc.remote_exec(ssh_clients, client_cmd, blocking=False)
 
 		time.sleep(1)
 		# start master
@@ -127,12 +134,12 @@ def run_exp(sc, ld, lstat):
 							  " -i exponential " + \
 							  " -C " + str(client_threads) + \
 							  " -Q 1000 " + \
-								" -l ECHO " + \
-                                                                " -OGEN=fb_ia" + \
-								" -OCDELAY=" + ("1" if conn_delay else "0")
+							  " -l TOUCH " + \
+							  " -OGEN=fixed:" + str(cacheline) + \
+							  " -OUPDATE=0"
 
 		tc.log_print(master_cmd)
-		sp = tc.remote_exec(master, master_cmd, blocking=False)
+		sp = tc.remote_exec(ssh_master, master_cmd, blocking=False)
 		p = sp[0]
 
 		success = False
@@ -173,28 +180,30 @@ def run_exp(sc, ld, lstat):
 			# return mout, sout, serr (master output, server output, server serr)
 			return output, stdout, stderr
 
-# generate multilate memparse format
+
 def build_memparse(lat_arr, qps_arr):
 
 	output = '{0: <10}'.format('#type') + '{0: >8}'.format('avg') + '{0: >8}'.format('std') + \
 				      '{0: >8}'.format('min') + '{0: >8}'.format('5th') + '{0: >8}'.format('10th') + \
-					  '{0: >8}'.format('50th') + '{0: >8}'.format('90th')  + '{0: >8}'.format('95th') + '{0: >8}'.format('99th') + "\n"
-	
-	output += '{0: <10}'.format('read') + '{0: >8}'.format("{:.1f}".format(np.mean(lat_arr))) + '{0: >8}'.format("{:.1f}".format(np.std(lat_arr))) + \
-				      '{0: >8}'.format("{:.1f}".format(np.min(lat_arr))) + \
-					  '{0: >8}'.format("{:.1f}".format(np.percentile(lat_arr, 5))) + \
-					  '{0: >8}'.format("{:.1f}".format(np.percentile(lat_arr, 10))) + \
-					  '{0: >8}'.format("{:.1f}".format(np.percentile(lat_arr, 50))) + \
-					  '{0: >8}'.format("{:.1f}".format(np.percentile(lat_arr, 90))) + \
-					  '{0: >8}'.format("{:.1f}".format(np.percentile(lat_arr, 95))) + \
-					  '{0: >8}'.format("{:.1f}".format(np.percentile(lat_arr, 99))) + "\n" \
+            '{0: >8}'.format('50th') + '{0: >8}'.format('90th') + \
+            '{0: >8}'.format('95th') + '{0: >8}'.format('99th') + "\n"
 
-	output += "\n" + "Total QPS = " + "{:.1f}".format(np.mean(qps_arr)) + " (0 / 0s)"
+	output += '{0: <10}'.format('read') + '{0: >8}'.format("{:.1f}".format(np.mean(lat_arr))) + '{0: >8}'.format("{:.1f}".format(np.std(lat_arr))) + \
+            '{0: >8}'.format("{:.1f}".format(np.min(lat_arr))) + \
+            '{0: >8}'.format("{:.1f}".format(np.percentile(lat_arr, 5))) + \
+            '{0: >8}'.format("{:.1f}".format(np.percentile(lat_arr, 10))) + \
+            '{0: >8}'.format("{:.1f}".format(np.percentile(lat_arr, 50))) + \
+            '{0: >8}'.format("{:.1f}".format(np.percentile(lat_arr, 90))) + \
+            '{0: >8}'.format("{:.1f}".format(np.percentile(lat_arr, 95))) + \
+            '{0: >8}'.format("{:.1f}".format(np.percentile(lat_arr, 99))) + "\n" \
+
+	output += "\n" + "Total QPS = " + \
+		"{:.1f}".format(np.mean(qps_arr)) + " (0 / 0s)"
 
 	return output
 
 def keep_results(output, sout, serr):
-	scpcmd = "scp " + master[0] + ":" + test_dir + "/" + sample_filename + " " + tc.get_odir() + "/sample.txt"
+	scpcmd = "scp " + ssh_master[0] + ":" + test_dir + "/" + sample_filename + " " + tc.get_odir() + "/sample.txt"
 	tc.log_print(scpcmd)
 	sp.check_call(scpcmd, shell=True)
 
@@ -213,6 +222,11 @@ def keep_results(output, sout, serr):
 	tc.log_print(mvcmd)
 	sp.check_call(mvcmd, shell=True)
 
+	if pmcstat:
+		f = open(tc.get_odir() + "/l" + str(int(avg_qps)) + ".pmcstat", "w")
+		f.write(serr)
+		f.close()
+
 	if lockstat and len(serr) > 0:
 		f = open(tc.get_odir() + "/l" + str(int(avg_qps))  + ".lstat", "w")
 		f.write(serr)
@@ -228,11 +242,11 @@ def keep_results(output, sout, serr):
 def main():
 	global hostfile
 	global server
+	global master
 	global clients
 	global dump
 	global lockstat
 	global client_only
-	global priority
 
 	options = getopt.getopt(sys.argv[1:], 'h:sldcp')[0]
 	for opt, arg in options:
@@ -247,18 +261,15 @@ def main():
 			dump=True
 		elif opt in ('-c'):
 			client_only=True
-		elif opt in ('-p'):
-			priority=True
 
-	tc.init("~/results.d/pingpong/" + str(threads) + "+" + str(len(clients)) + "x" + str(client_threads) + "x" + str(conn_per_thread))
+	tc.init("~/results.d/rss/" + str(threads) + "+" + str(len(clients)) + "x" + str(client_threads) + "x" + str(conn_per_thread))
 
 	tc.log_print("Configuration:\n" + \
 		  "Hostfile: " + ("None" if hostfile == None else hostfile) + "\n" \
 		  "Lockstat: " + str(lockstat) + "\n" \
 		  "KQ dump: " + str(dump) + "\n" \
 		  "Client only: " + str(client_only) + "\n" + \
-		  "Conn delay: " + str(conn_delay) + "\n"
-		  "Priority: " + str(priority) + "\n")
+		  "Conn delay: " + str(conn_delay) + "\n")
 
 	if hostfile != None:
 		hosts = tc.parse_hostfile(hostfile)
@@ -282,27 +293,27 @@ def main():
 		keep_results(output, sout, serr)
 		stop_all()
 		
-		while True:
-			tc.log_print("============ Sched: " + str(ename) + " Flag: " + format(esched, '#04x') + " Load: " + str(cur_load) + " ============")
-
-			output, sout, serr = run_exp(esched, cur_load, lockstat)
-
-			qps = keep_results(output, sout, serr)
-			
-			pct = int((qps - last_load) / init_step * 100)
-			tc.log_print("last_load: " + str(last_load) + " this_load: " + str(qps) + " inc_pct: " + str(pct) + "%")
-
-			if pct <= term_pct:
-				tc.log_print("inc_pct less than TERM_PCT " + str(term_pct) + "%. Done.")
-				break
-
-			if pct <= inc_pct:
-				step_mul += step_inc_pct
-				tc.log_print("inc_pct less than INC_PCT " + str(inc_pct) + "%. Increasing step multiplier to " + str(step_mul) + "%")
-
-			last_load = qps
-			cur_load += int(init_step * step_mul / 100)
-			tc.log_print("")
+		#while True:
+		#	tc.log_print("============ Sched: " + str(ename) + " Flag: " + format(esched, '#04x') + " Load: " + str(cur_load) + " ============")
+#
+		#	output, sout, serr = run_exp(esched, cur_load, lockstat)
+#
+		#	qps = keep_results(output, sout, serr)
+		#	
+		#	pct = int((qps - last_load) / init_step * 100)
+		#	tc.log_print("last_load: " + str(last_load) + " this_load: " + str(qps) + " inc_pct: " + str(pct) + "%")
+#
+		#	if pct <= term_pct:
+		#		tc.log_print("inc_pct less than TERM_PCT " + str(term_pct) + "%. Done.")
+		#		break
+#
+		#	if pct <= inc_pct:
+		#		step_mul += step_inc_pct
+		#		tc.log_print("inc_pct less than INC_PCT " + str(inc_pct) + "%. Increasing step multiplier to " + str(step_mul) + "%")
+#
+		#	last_load = qps
+		#	cur_load += int(init_step * step_mul / 100)
+		#	tc.log_print("")
 		
 		tc.end()
 

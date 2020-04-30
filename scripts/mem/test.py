@@ -20,18 +20,17 @@ root_dir = file_dir + "/../../"
 sample_filename = "sample.txt"
 
 sched = [
-	#"vanilla", -1,
+	"queue0", tc.make_sched_flag(tc.SCHED_QUEUE, 0),
+	"vanilla", -1,
+    "cpu0", tc.make_sched_flag(tc.SCHED_CPU, 0),
 	"best2", tc.make_sched_flag(tc.SCHED_BEST, 2),
-
-	#"q0_ws2", tc.make_sched_flag(tc.SCHED_QUEUE, 0, feat=tc.SCHED_FEAT_WS, fargs=2),
-	#"queue2", tc.make_sched_flag(tc.SCHED_QUEUE, 2),
-	#"q2_ws2", tc.make_sched_flag(tc.SCHED_QUEUE, 2, feat=tc.SCHED_FEAT_WS, fargs=4),
-	#"cpu0_ws2", tc.make_sched_flag(tc.SCHED_CPU, 0, feat=tc.SCHED_FEAT_WS, fargs=2),
-	#"cpu2", tc.make_sched_flag(tc.SCHED_CPU, 2),
-    #"cpu2_ws2", tc.make_sched_flag(tc.SCHED_CPU, 2, feat=tc.SCHED_FEAT_WS, fargs=4),
-	#"queue0", tc.make_sched_flag(tc.SCHED_QUEUE, 0),
-	#"best2_ws2", tc.make_sched_flag(tc.SCHED_BEST, 2, feat=tc.SCHED_FEAT_WS, fargs=4),
-	#"cpu0", tc.make_sched_flag(tc.SCHED_CPU, 0),
+	"q0_ws4", tc.make_sched_flag(tc.SCHED_QUEUE, 0, feat=tc.SCHED_FEAT_WS, fargs=4),
+	"queue2", tc.make_sched_flag(tc.SCHED_QUEUE, 2),
+	"q2_ws4", tc.make_sched_flag(tc.SCHED_QUEUE, 2, feat=tc.SCHED_FEAT_WS, fargs=4),
+	"cpu0_ws4", tc.make_sched_flag(tc.SCHED_CPU, 0, feat=tc.SCHED_FEAT_WS, fargs=4),
+	"cpu2", tc.make_sched_flag(tc.SCHED_CPU, 2),
+    "cpu2_ws4", tc.make_sched_flag(tc.SCHED_CPU, 2, feat=tc.SCHED_FEAT_WS, fargs=4),
+	"best2_ws4", tc.make_sched_flag(tc.SCHED_BEST, 2, feat=tc.SCHED_FEAT_WS, fargs=4),
 	#"rand", make_sched_flag(0, 0),
 	#"arachne", -2,
 	#"linox", -3, 
@@ -44,9 +43,9 @@ init_step = 100000
 term_pct = 1
 inc_pct = 50
 
-master = ["skylake3"]
+master = ["skylake2"]
 server = ["skylake1"]
-clients = ["skylake2", "skylake4", "skylake5", "skylake6", "skylake7", "skylake8", "sandybridge2", "sandybridge3", "sandybridge4"]
+clients = ["skylake3", "skylake4", "skylake5", "skylake6", "skylake7", "skylake8"] # "sandybridge2", "sandybridge3", "sandybridge4"]
 
 threads = 12
 client_threads = 12

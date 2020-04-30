@@ -2,17 +2,17 @@
 test_dir="/tmp/tests.d"
 
 srv_cc0="skylake1"
-srv_mce0=""
-#skylake2 skylake3 skylake4 skylake5 skylake6 skylake7 skylake8"
+srv_mce0="skylake2 skylake3 skylake5 skylake6 skylake7 skylake8"
+
+cnt=0
 
 mce0() {
     # separate these functions because we might change kernel (reboot) without needing to recompile
     echo "$1 -> $2"
-    ssh $1 "sudo kldload mlx5; \
-            sudo kldload mlx5en; \
-            sudo bash /usr/bin/set_irq_affinity_freebsd.sh mce0 NUMA 0; \
-            sudo ifconfig mce0 inet $2/24; \
-            sudo ifconfig mce0 up;"
+    ssh $1 "sudo ifconfig ixl1.4004 destroy; \
+            sudo ifconfig ixl1.4004 create vlan 4004 vlandev ixl1; \
+            sudo ifconfig ixl1.4004 inet $2/24; \
+            sudo ifconfig ixl1.4004 up;"
     wait
     echo "$1 Done."
     echo ""

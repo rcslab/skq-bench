@@ -1,10 +1,14 @@
-#include "reqgen.h"
-#include <ppd/msg.h>
+#include "google/protobuf/stubs/common.h"
 #include "options.h"
+#include <msg.pb.h>
 #include <stdint.h>
 #include <sstream>
+#include <sys/_stdint.h>
 #include <unistd.h>
+#include <util.h>
+#include <rocksdb/db.h>
 
+#include "reqgen.h"
 ////////////////
 // TOUCH Generator
 ////////////////
@@ -41,51 +45,39 @@ touch_gen::~touch_gen()
 
 int touch_gen::send_req(int fd) 
 {
-    struct ppd_msg * msg;
-	struct ppd_touch_arg load;
-
-	msg = (struct ppd_msg *) malloc(sizeof(struct ppd_msg) + sizeof(struct ppd_touch_arg));
-
-	if (msg == NULL) {
-		E("Can't allocate memory for msg\n");
-	}
+	ppd_touch_req req;
 
 	if (options.master_mode) {
-		load.touch_cnt = 0;
+		req.set_touch_cnt(0);
 	} else {
-		load.touch_cnt = (uint32_t)this->wgen->generate();
+		req.set_touch_cnt(this->wgen->generate());
 	}
 
 	if (this->ugen->generate() < this->update_ratio) {
-		load.inc = 1;
+		req.set_inc(1);
 	} else {
-		load.inc = 0;
+		req.set_inc(0);
 	}
 
-	msg->cmd = PPD_CTOUCH;
-	msg->dat_len = sizeof(struct ppd_touch_arg);
-	memcpy(msg->dat, &load, sizeof(struct ppd_touch_arg));
+	if (!req.SerializeToArray(this->send_buf, MAX_SEND_BUF_SIZE)) {
+		E("Failed to serialize to array for fd %d", fd);
+	}
 
-    int err = write_msg(fd, msg);
-
-    free(msg);
-
-	return err;
+	return writemsg(fd, this->send_buf, this->MAX_SEND_BUF_SIZE, this->send_buf, req.ByteSizeLong());
 }
 
 int touch_gen::read_resp(int fd)
 {
-    struct ppd_msg * msg;
+    ppd_touch_resp resp;
+	struct ppd_msg * msg = (struct ppd_msg *)this->send_buf;
 
-    if (read_msg(fd, &msg) < 0) {
-		return -1;
+    if (readmsg(fd, this->send_buf, MAX_SEND_BUF_SIZE) < 0) {
+		E("Readbuf failed for fd %d\n", fd);
 	}
 
-    if (msg->cmd != PPD_CRESP) {
-        return -1;
-    }
+	resp.ParseFromArray(msg->payload, msg->size);
 
-    return 0;
+    return resp.status();
 }
 
 ////////////////
@@ -161,45 +153,33 @@ int echo_gen::get_delay()
 
 int echo_gen::send_req(int fd) 
 {
-	struct ppd_msg *msg;
-	struct ppd_echo_arg load;
-
-	msg = (struct ppd_msg *) malloc(sizeof(struct ppd_msg) + sizeof(struct ppd_echo_arg));
-
-	if (msg == NULL) {
-		E("Can't allocate memory for msg\n");
-	}
+	ppd_echo_req req;
 
 	if (options.master_mode) {
-		load.enable_delay = 0;
+		req.set_enable_delay(0);
 	} else {
-		load.enable_delay = get_delay();
+		req.set_enable_delay(get_delay());
 	}
 
-	msg->cmd = PPD_CECHO;
-	msg->dat_len = sizeof(struct ppd_echo_arg);
-	memcpy(msg->dat, &load, sizeof(struct ppd_echo_arg));
+	if (!req.SerializeToArray(this->send_buf, MAX_SEND_BUF_SIZE)) {
+		E("Failed to serialize to array for fd %d\n", fd);
+	}
 
-    int err = write_msg(fd, msg);
-
-    free(msg);
-
-	return err;
+	return writemsg(fd, this->send_buf, MAX_SEND_BUF_SIZE, this->send_buf, req.ByteSizeLong());
 }
 
 int echo_gen::read_resp(int fd)
 {
-    struct ppd_msg * msg;
+    ppd_echo_resp resp;
+	struct ppd_msg * msg = (struct ppd_msg *)this->send_buf;
 
-    if (read_msg(fd, &msg) < 0) {
-		return -1;
+    if (readmsg(fd, this->send_buf, MAX_SEND_BUF_SIZE) < 0) {
+		E("Readbuf failed for fd %d\n", fd);
 	}
 
-    if (msg->cmd != PPD_CRESP) {
-        return -1;
-    }
+	resp.ParseFromArray(msg->payload, msg->size);
 
-    return 0;
+    return resp.status();
 }
 
 
@@ -246,8 +226,8 @@ http_gen::build_req()
 int http_gen::send_req(int fd) 
 {
 	std::string req = build_req();
-
-	return writebuf(fd, req.c_str(), req.length());
+	
+	return writebuf(fd, (void*)req.c_str(), req.length());
 }
 
 int http_gen::read_resp(int fd)
@@ -255,4 +235,90 @@ int http_gen::read_resp(int fd)
 	// hack
 	// consume everything
 	return read(fd, cons_buf, CONS_SZ);
+}
+
+////////////////
+// RDB Generator
+////////////////
+
+rdb_gen::rdb_gen(const int conn_id, std::unordered_map<std::string, std::string>* args) : req_gen(conn_id), rand(1000 + conn_id)
+{
+	std::vector<double> ratio {GET_RATIO, PUT_RATIO, SEEK_RATIO};
+	this->query.Initiate(ratio);
+	gen_exp.InitiateExpDistribution(TOTAL_KEYS, KEYRANGE_DIST_A, KEYRANGE_DIST_B, KEYRANGE_DIST_C, KEYRANGE_DIST_D);
+}
+
+rdb_gen::~rdb_gen()
+{
+	
+}
+
+int rdb_gen::send_req(int fd) 
+{
+	ppd_rdb_req req;
+
+	int status; 
+	int64_t ini_rand = GetRandomKey(&this->rand);
+	int64_t key_rand = gen_exp.DistGetKeyID(ini_rand, this->KEYRANGE_DIST_A, this->KEYRANGE_DIST_B);
+	int64_t rand_v = ini_rand % TOTAL_KEYS;
+	double u = (double)rand_v / TOTAL_KEYS;
+	std::unique_ptr<const char[]> key_guard;
+    rocksdb::Slice key = AllocateKey(&key_guard, KEY_SIZE);
+	RandomGenerator gen;
+
+	int query_type = query.GetType(rand_v);
+
+	GenerateKeyFromInt(key_rand, TOTAL_KEYS, KEY_SIZE, &key);
+
+	V("SENDING KEY: %s.\n", key.data());
+	switch (query_type) {
+		case 0: {
+			// get query
+			req.set_op(PPD_RDB_OP_GET);
+			req.set_key(key.data(), key.size());
+			break;
+		}
+		case 1: {
+			// put query
+			int val_sz = ParetoCdfInversion(u, VALUE_THETA, VALUE_K, VALUE_SIGMA);
+			rocksdb::Slice val = gen.Generate((unsigned int)val_sz);
+			req.set_op(PPD_RDB_OP_PUT);
+			req.set_key(key.data(), key.size());
+			req.set_val(val.data(), val.size());
+			break;
+		}
+		case 2: {
+			// seek query
+			int64_t scan_length = ParetoCdfInversion(u, ITER_THETA, ITER_K, ITER_SIGMA);
+			req.set_op(PPD_RDB_OP_SEEK);
+			req.set_key(key.data(), key.size());
+			req.set_optarg(scan_length);
+			break;
+		}
+		default: {
+			E("Unsupported query type %d", query_type);
+		}
+	}
+
+	if (!req.SerializeToArray(this->send_buf, MAX_SEND_BUF_SIZE)) {
+		E("Failed to serialize protobuf");
+	}
+
+	status = writemsg(fd, this->send_buf, MAX_SEND_BUF_SIZE, this->send_buf, req.ByteSizeLong());
+
+	return status;
+}
+
+int rdb_gen::read_resp(int fd)
+{
+    ppd_rdb_resp resp;
+	struct ppd_msg * msg = (struct ppd_msg *)this->send_buf;
+
+    if (readmsg(fd, this->send_buf, MAX_SEND_BUF_SIZE) < 0) {
+		E("Readbuf failed for fd %d", fd);
+	}
+
+	resp.ParseFromArray(msg->payload, msg->size);
+
+    return resp.status();
 }

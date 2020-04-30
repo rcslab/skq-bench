@@ -1,7 +1,8 @@
 #!/bin/sh
 
 srv_cc0="skylake1"
-srv_ixl0="skylake2 skylake3 skylake4 skylake5 skylake6 skylake7 skylake8"
+srv_ixl0=""
+#"skylake2 skylake3 skylake4 skylake5 skylake6 skylake7 skylake8"
 
 mce0() {
     # separate these functions because we might change kernel (reboot) without needing to recompile

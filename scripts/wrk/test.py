@@ -14,9 +14,9 @@ import memparse as mp
 import libtc as tc
 
 step_inc_pct = 100
-init_step = 10000 #
+init_step = 30000 #
 server_port = 8123
-term_pct = 1
+term_pct = 0
 inc_pct = 50
 
 # paths
@@ -26,19 +26,20 @@ root_dir = file_dir + "/../../"
 sample_filename = "sample.txt"
 
 sched = [
-	"cpu0", tc.make_sched_flag(tc.SCHED_CPU, 0),
-	"q0_ws4", tc.make_sched_flag(tc.SCHED_QUEUE, 0, feat=tc.SCHED_FEAT_WS, fargs=4),
+	#"nginx", -2,
+	#"cpu0", tc.make_sched_flag(tc.SCHED_CPU, 0),
 	"vanilla", -1,
-	"queue0", tc.make_sched_flag(tc.SCHED_QUEUE, 0),
-	"cpu0_ws4", tc.make_sched_flag(tc.SCHED_CPU, 0, feat=tc.SCHED_FEAT_WS, fargs=4),
-    "cpu2_ws4", tc.make_sched_flag(tc.SCHED_CPU, 2, feat=tc.SCHED_FEAT_WS, fargs=2),
-	"best2", tc.make_sched_flag(tc.SCHED_BEST, 2),
-	"best2_ws4", tc.make_sched_flag(tc.SCHED_BEST, 2, feat=tc.SCHED_FEAT_WS, fargs=4),
-	"q0_ws4", tc.make_sched_flag(tc.SCHED_QUEUE, 0, feat=tc.SCHED_FEAT_WS, fargs=4),
-	"queue2", tc.make_sched_flag(tc.SCHED_QUEUE, 2),
-	"q2_ws4", tc.make_sched_flag(tc.SCHED_QUEUE, 2, feat=tc.SCHED_FEAT_WS, fargs=2),
-	"cpu0_ws4", tc.make_sched_flag(tc.SCHED_CPU, 0, feat=tc.SCHED_FEAT_WS, fargs=4),
-	"cpu2", tc.make_sched_flag(tc.SCHED_CPU, 2),
+	#"queue0", tc.make_sched_flag(tc.SCHED_QUEUE, 0),
+	#"q0_ws", tc.make_sched_flag(tc.SCHED_QUEUE, 0, feat=tc.SCHED_FEAT_WS, fargs=1),
+	#"cpu0_ws", tc.make_sched_flag(tc.SCHED_CPU, 0, feat=tc.SCHED_FEAT_WS, fargs=1),
+    #    "cpu2_ws", tc.make_sched_flag(tc.SCHED_CPU, 2, feat=tc.SCHED_FEAT_WS, fargs=1),
+	#"best2", tc.make_sched_flag(tc.SCHED_BEST, 2),
+	#"best2_ws", tc.make_sched_flag(tc.SCHED_BEST, 2, feat=tc.SCHED_FEAT_WS, fargs=1),
+	#"q0_ws", tc.make_sched_flag(tc.SCHED_QUEUE, 0, feat=tc.SCHED_FEAT_WS, fargs=1),
+	#"queue2", tc.make_sched_flag(tc.SCHED_QUEUE, 2),
+	#"q2_ws", tc.make_sched_flag(tc.SCHED_QUEUE, 2, feat=tc.SCHED_FEAT_WS, fargs=1),
+	#"cpu0_ws", tc.make_sched_flag(tc.SCHED_CPU, 0, feat=tc.SCHED_FEAT_WS, fargs=1),
+	#"cpu2", tc.make_sched_flag(tc.SCHED_CPU, 2),
 	#"rand", make_sched_flag(0, 0),
 ]
 
@@ -46,12 +47,12 @@ master = ["skylake2"]
 server = ["skylake1"]
 clients = ["skylake3", "skylake4", "skylake5", "skylake6", "skylake7", "skylake8"]
 
-threads = 1
+threads = 12
 client_threads = 12
 warmup = 5
 duration = 10
 cooldown = 0
-conn_per_thread = 8
+conn_per_thread = 12
 
 hostfile = None
 lockstat = False
@@ -66,8 +67,7 @@ def stop_all():
 	if not client_only:
 		# stop server
 		tc.log_print("Stopping server...")
-		tc.remote_exec(server, "sudo killall -9 httpd", check=False)
-		tc.remote_exec(server, "sudo killall -9 lockstat", check=False)
+		tc.remote_exec(server, "sudo killall -9 httpd; sudo killall -9 nginx; sudo killall -9 lockstat", check=False)
 
 	# stop master
 	tc.log_print("Stopping master...")
@@ -86,16 +86,22 @@ def run_exp(sc, ld, lstat):
 		else:
 			# start server
 			tc.log_print("Starting server...")
-			server_cmd = test_dir + "/celestis/build/tools/httpd/httpd -l -a -w " + str(threads) + " -p " + str(server_port) + " -d " + test_dir + "/scripts/wrk/"
-			
-			if lstat:
-				server_cmd = "sudo lockstat -A -P -s4 -n16777216 " + server_cmd
 
-			if sc != -1:
-				server_cmd = server_cmd + " -m " + str(sc)
+			if sc == -2:
+				server_cmd = "sudo cpuset -l 0-23 nginx -c " + test_dir + "/scripts/wrk/nginx.conf"
+			else:
+				server_cmd = test_dir + "/celestis/build/tools/httpd/httpd -a -w " + str(threads) + " -p " + str(server_port) + " -d " + test_dir + "/scripts/wrk/"
+				
+				if lstat:
+					server_cmd = "sudo lockstat -A -P -s4 -n16777216 " + server_cmd
 
-			if dump:
-				server_cmd = server_cmd + " -D "
+				if sc != -1:
+					server_cmd = server_cmd + " -m " + str(sc)
+				else:
+					server_cmd = server_cmd + " -l "
+
+				if dump:
+					server_cmd = server_cmd + " -D "
 
 			tc.log_print(server_cmd)
 
@@ -137,7 +143,7 @@ def run_exp(sc, ld, lstat):
 			# we use failure detection to save time for long durations
 			if False \
 				or not tc.scan_stderr(sp, exclude=[".*warn.*", ".*WARN.*", ".*DEBUG.*"]) \
-				or not tc.scan_stderr(ssrv, exclude=[".*warn.*", ".*WARN.*", ".*DEBUG.*"]) \
+				or not tc.scan_stderr(ssrv, exclude=[".*warn.*", ".*WARN.*", ".*DEBUG.*", ".*Bad file descriptor.*"]) \
 				or not tc.scan_stderr(sclt, exclude=[".*warn.*", ".*WARN.*", ".*DEBUG.*"]) \
 				or cur >= int(warmup + duration) * 2 \
 					:

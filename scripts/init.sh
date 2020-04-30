@@ -2,7 +2,7 @@
 test_dir="/tmp/tests.d/"
 root="../"
 
-servers="skylake1 skylake2 skylake3 skylake4 skylake5 skylake6 skylake7 skylake8 sandybridge2 sandybridge3 sandybridge4"
+servers="skylake1 skylake2 skylake3 skylake4 skylake5 skylake6 skylake7 skylake8" 
 
 rsync_flags="-qvchar"
 
@@ -17,6 +17,7 @@ init() {
                sudo rm -rf /tmp/cppzmq; \
                sudo rm -rf $test_dir; \
                git clone https://github.com/zeromq/cppzmq /tmp/cppzmq; \
+               sudo kldload hwpmc; \
                sudo cp /tmp/cppzmq/zmq.hpp /usr/local/include/; \
                mkdir -p /tmp/charm; \
                sudo umount /tmp/charm;

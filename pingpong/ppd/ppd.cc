@@ -20,32 +20,21 @@
 #include <vector>
 #include <sstream>
 
-#include <common.h>
-#include <ppd/msg.h>
+#include "options.h"
+#include "reqproc.h"
+#include <const.h>
+#include <util.h>
 
-/* I don't even know if this is a C or C++ thing. */
+#include <unordered_map>
+
+#include <msg.pb.h>
 
 static constexpr int NEVENT = 256;
 static constexpr int SOCK_BACKLOG = 10000;
 static constexpr int SINGLE_LEGACY = -1;
 static constexpr int DEFAULT_PORT = 9898;
 
-struct server_option {
-	int threads;
-	int port;
-	int skq;
-	int skq_flag;
-	int cpu_affinity;
-	int skq_dump;
-	int verbose;
-
-	std::vector<char*> hpip;
-	int kq_rtshare;
-	int kq_tfreq;
-	
-	/* only applies to TOUCH requests */
-	int table_sz;
-};
+static std::unordered_map<std::string, std::string> mode_params;
 
 struct alignas(CACHE_LINE_SIZE) cache_item {
 	int val;
@@ -53,7 +42,7 @@ struct alignas(CACHE_LINE_SIZE) cache_item {
 static_assert(sizeof(struct cache_item) == CACHE_LINE_SIZE, "cache_item not cache line sized");
 
 struct conn_hint {
-	struct cache_item *items;
+	req_proc * proc;
 };
 
 struct alignas(CACHE_LINE_SIZE) worker_thread {
@@ -64,19 +53,17 @@ struct alignas(CACHE_LINE_SIZE) worker_thread {
 };
 static_assert(sizeof(struct worker_thread) == CACHE_LINE_SIZE, "worker_thread not cache line sized");
 
-struct server_option options = {.threads = 1, 
-								.port = DEFAULT_PORT, 
-								.skq = 0,
-								.skq_flag = 0, 
-								.cpu_affinity = 0,
-								.skq_dump = 0,
-								.verbose = 0,
-								.kq_rtshare = 100,
-								.kq_tfreq = 0,
-								.table_sz = 64};
-
-static const struct ppd_msg GENERIC_REPLY = { .cmd = PPD_CRESP,
-											  .dat_len = 0 };
+server_option options = {.threads = 1, 
+						.port = DEFAULT_PORT, 
+						.skq = 0,
+						.skq_flag = 0, 
+						.cpu_affinity = 0,
+						.skq_dump = 0,
+						.verbose = 0,
+						.kq_rtshare = 100,
+						.kq_tfreq = 0,
+						.mode = WORKLOAD_TYPE::ECHO,
+						.num_mode_params = 0 };
 
 /* cpu assignment */
 static int ncpu = 0;
@@ -85,9 +72,7 @@ static int cur = 0;
 static void
 conn_hint_destroy(struct conn_hint *hint)
 {
-	if (hint->items != NULL) {
-		free(hint->items);
-	}
+	delete hint->proc;
 	delete hint;
 }
 
@@ -161,7 +146,6 @@ handle_event(struct worker_thread *tinfo, struct kevent* kev)
 	int conn_fd;
 	int status;
 	struct conn_hint *hint;
-	struct ppd_msg *msg;
 
 	if (kev->filter != EVFILT_READ) {
 		E("Unknown event filter %d\n", kev->filter);
@@ -176,79 +160,14 @@ handle_event(struct worker_thread *tinfo, struct kevent* kev)
 		return ECONNRESET;
 	}
 
-	status = read_msg(conn_fd, &msg);
+	status = hint->proc->proc_req(conn_fd);
 
 	if (status < 0) {
-		W("Connection %d dropped due to readbuf. ERR: %d\n", conn_fd, errno);
+		W("Connection %d proc_req returned error %d\n", conn_fd, status);
 		drop_conn(tinfo, kev);
-		return ECONNRESET;
+		return status;
 	}
 
-	V("Connection %d cmd %d, dat_len %d \n", conn_fd, msg->cmd, msg->dat_len);
-
-	switch (msg->cmd) {
-		case PPD_CECHO: {
-			if (msg->dat_len != sizeof(struct ppd_echo_arg)) {
-				W("Connection %d invalid echo request\n", conn_fd);
-				break;
-			}
-
-			/* XXX: not cross-endianess */
-			struct ppd_echo_arg *arg = (struct ppd_echo_arg*)&msg->dat[0];
-
-			if (arg->enable_delay) {
-				uint64_t server_delay = arg->enable_delay;
-				uint64_t now = get_time_us();
-
-				V("Conn %d Thread %d delaying for %ld...\n", conn_fd, tinfo->id, server_delay);
-				while (get_time_us() - now <= server_delay) {};
-			}
-
-			status = write_msg(conn_fd, &GENERIC_REPLY);
-
-			if (status < 0) {
-				W("Connection %d dropped due to writebuf. ERR: %d\n", conn_fd, errno);
-				drop_conn(tinfo, kev);
-			}
-			break;
-		}
-		case PPD_CTOUCH: {
-			if (msg->dat_len != sizeof(struct ppd_touch_arg)) {
-				W("Connection %d invalid touch request\n", conn_fd);
-				break;
-			}
-
-			/* XXX: not cross-endianess */
-			struct ppd_touch_arg *arg = (struct ppd_touch_arg*)&msg->dat[0];
-
-			if (hint->items != NULL) {
-				V("Conn %d Thread %d updating %d items val %d...\n", conn_fd, tinfo->id, arg->touch_cnt, arg->inc);
-				int sum;
-				for(uint32_t i = 0; i < arg->touch_cnt; i++) {
-					if (arg->inc > 0) {
-						hint->items[i % options.table_sz].val += arg->inc;
-					} else {
-						/* only read */
-						sum = hint->items[i % options.table_sz].val;
-					}	
-				}
-			}
-
-			status = write_msg(conn_fd, &GENERIC_REPLY);
-
-			if (status < 0) {
-				W("Connection %d dropped due to writebuf. ERR: %d\n", conn_fd, errno);
-				drop_conn(tinfo, kev);
-			}
-			break;
-		}
-		default: {
-			W("Received unknown cmd %d from conn %d", msg->cmd, conn_fd);
-			break;
-		}
-	}
-
-	free(msg);
 	tinfo->evcnt++;
 	return 0;
 }
@@ -292,6 +211,7 @@ void dump_options()
 	ss << "Configuration:\n"
 	   << "        worker threads: " << options.threads << std::endl
 	   << "        port: " << options.port << std::endl
+	   << "        mode: " << options.mode << std::endl
 	   << "        single KQ: " << options.skq << std::endl
 	   << "        single KQ flags: " << options.skq_flag << std::endl
 	   << "        single KQ dump:" << options.skq_dump << std::endl
@@ -299,7 +219,6 @@ void dump_options()
 	   << "        verbose: " << options.verbose << std::endl
 	   << "        kq_rtshare: " << options.kq_rtshare << std::endl
 	   << "        kq_tfreq: " << options.kq_tfreq << std::endl
-	   << "        cache item size: " << options.table_sz << std::endl
 	   << "        priority client IPs (" << options.hpip.size() << "): " << std::endl;
 
 	for(uint i = 0; i < options.hpip.size(); i++) {
@@ -323,7 +242,11 @@ usage()
 		   "    r: realtime client hostname\n"
 		   "    R: realtime share\n"
 		   "    F: kqueue frequency\n"
-		   "    M: per connection table entry count. Default 64.\n");
+		   "    M: server mode: 0 - ECHO, 1 - TOUCH, 2 - HTTP, 3 - RDB\n"
+		   "    O: mode specific parameters in the format \"key=value\"\n"
+		   "    Workload specific parameters:\n"
+	       "       TOUCH:\n"
+		   "       ENTRIES - Number of cache-aligned entries per connection.\n\n");
 }
 
 static int
@@ -455,12 +378,28 @@ get_ip_from_hostname(const char* hostname, char* buf, int len)
   }
 }
 
+void parse_mode_params()
+{
+	char * saveptr;
+
+	for (int i = 0; i < options.num_mode_params; i++) {
+		saveptr = NULL;
+		char *key = strtok_r(options.mode_params[i], "=", &saveptr);
+  		char *val = strtok_r(NULL, "=", &saveptr);
+		
+		mode_params.insert({key, val});
+
+		V("Parsed workload parameter: %s = %s\n", key, val);
+	}
+}
 /*
  * Creates a worker thread.
  */
 int 
 main(int argc, char *argv[]) 
 {
+	GOOGLE_PROTOBUF_VERIFY_VERSION;
+
 	int kq = -1;
 	int status;
 	char ch;
@@ -471,7 +410,7 @@ main(int argc, char *argv[])
 	char dbuf[1024 * 1024 + 1];
 #endif
 	
-	while ((ch = getopt(argc, argv, "d:p:at:m:vhr:R:F:M:")) != -1) {
+	while ((ch = getopt(argc, argv, "d:p:at:m:vhr:R:F:M:O:")) != -1) {
 		switch (ch) {
 			case 'd':
 				options.skq_dump = atoi(optarg);
@@ -489,8 +428,13 @@ main(int argc, char *argv[])
 				options.skq = 1;
 				options.skq_flag = atoi(optarg);
 				break;
+			case 'O': {
+				strncpy(options.mode_params[options.num_mode_params], optarg, MAX_MODE_PARAMS_LEN);
+				options.num_mode_params++;
+				break;
+			}
 			case 'M':
-				options.table_sz = atoi(optarg);
+				options.mode = atoi(optarg);
 				break;
 			case 'v':
 				options.verbose = 1;
@@ -521,6 +465,8 @@ main(int argc, char *argv[])
 
 	// don't raise SIGPIPE when sending into broken TCP connections
 	::signal(SIGPIPE, SIG_IGN); 
+
+	parse_mode_params();
 
 	V("Setting up listen sockets...\n");
 
@@ -633,16 +579,18 @@ main(int argc, char *argv[])
 
 		struct conn_hint *hint = new struct conn_hint;
 
-		if (options.table_sz > 0) {
-			V("Allocating %d items x %d CASZ for connnection %d\n", options.table_sz, CACHE_LINE_SIZE, conn_fd);
-			hint->items = (struct cache_item *)aligned_alloc(CACHE_LINE_SIZE, options.table_sz * sizeof(struct cache_item));
-			if (hint->items == NULL) {
-				W("Connection %d dropped - failed to allocate memory for items\n", conn_fd);
-				close(conn_fd);
-				continue;
-			}
-		} else {
-			hint->items = NULL;
+		switch (options.mode) {
+			case WORKLOAD_TYPE::ECHO:
+				hint->proc = new echo_proc(&mode_params);
+				break;
+			case WORKLOAD_TYPE::TOUCH:
+				hint->proc = new touch_proc(&mode_params);
+				break;
+			case WORKLOAD_TYPE::RDB:
+				hint->proc = new rdb_proc(&mode_params);
+				break;
+			default:
+				E("Unknown server mode %d", options.mode);
 		}
 
 		int target_kq = wrk_thrds.at(cur_thread)->kqfd;
@@ -673,5 +621,6 @@ main(int argc, char *argv[])
 		cur_thread = (cur_thread + 1) % wrk_thrds.size();
 	}
 	
+	google::protobuf::ShutdownProtobufLibrary();
 	return 0;
 }

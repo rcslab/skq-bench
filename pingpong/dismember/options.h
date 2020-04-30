@@ -1,16 +1,11 @@
-#ifndef OPTIONS_H
-#define OPTIONS_H
+#pragma once
 
 #include <arpa/inet.h>
 #include <string.h>
-#include <common.h>
 #include <atomic>
 
-enum WORKLOAD_TYPE {
-	ECHO = 0,
-	TOUCH = 1,
-	HTTP = 2
-};
+#include <const.h>
+#include <util.h>
 
 static constexpr const int MAX_GEN_LEN = 31;
 static constexpr const int DEFAULT_SERVER_CLIENT_CONN_PORT = 9898;
@@ -127,5 +122,3 @@ struct option {
 };
 /* Don't send god damn vtables */
 static_assert(std::is_standard_layout<option>(), "struct option must be standard layout");
-
-#endif
