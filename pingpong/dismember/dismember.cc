@@ -188,7 +188,7 @@ void kqconn_state_machine(struct kqconn *conn)
 					conn->next_send += (int)(conn->gen->generate() * 1000000.0);
 					conn->last_send = now;
 					conn->state = STATE_WAITING;
-					
+
 					if (conn->rgen->send_req(conn->conn_fd) < 0) {
 						/* effectively skipping this packet */
 						W("Cannot write to connection %d\n", conn->conn_fd);
@@ -264,7 +264,7 @@ worker_thread(int id, int notif_pipe, vector<struct datapt*> *data)
 	for (int i = 0 ; i < options.client_conn; i++) {
 		while (true) {
 			int enable = 1;
-			struct timeval tv = { .tv_sec = 5, tv.tv_usec = 0 };
+			struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
 
 			conn_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 			if (conn_fd == -1) {

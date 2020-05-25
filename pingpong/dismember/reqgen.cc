@@ -226,7 +226,7 @@ http_gen::build_req()
 int http_gen::send_req(int fd) 
 {
 	std::string req = build_req();
-	
+	//V("Sending Request: %s\n", req.c_str());
 	return writebuf(fd, (void*)req.c_str(), req.length());
 }
 
@@ -234,7 +234,7 @@ int http_gen::read_resp(int fd)
 {
 	// hack
 	// consume everything
-	return read(fd, cons_buf, CONS_SZ);
+	return read(fd, cons_buf, CONS_SZ);;
 }
 
 ////////////////
@@ -243,6 +243,7 @@ int http_gen::read_resp(int fd)
 
 rdb_gen::rdb_gen(const int conn_id, std::unordered_map<std::string, std::string>* args) : req_gen(conn_id), rand(1000 + conn_id)
 {
+	this->key = AllocateKey(&this->key_guard, KEY_SIZE);
 	std::vector<double> ratio {GET_RATIO, PUT_RATIO, SEEK_RATIO};
 	this->query.Initiate(ratio);
 	gen_exp.InitiateExpDistribution(TOTAL_KEYS, KEYRANGE_DIST_A, KEYRANGE_DIST_B, KEYRANGE_DIST_C, KEYRANGE_DIST_D);
@@ -255,27 +256,25 @@ rdb_gen::~rdb_gen()
 
 int rdb_gen::send_req(int fd) 
 {
+	int status;
 	ppd_rdb_req req;
 
-	int status; 
 	int64_t ini_rand = GetRandomKey(&this->rand);
 	int64_t key_rand = gen_exp.DistGetKeyID(ini_rand, this->KEYRANGE_DIST_A, this->KEYRANGE_DIST_B);
+
 	int64_t rand_v = ini_rand % TOTAL_KEYS;
 	double u = (double)rand_v / TOTAL_KEYS;
-	std::unique_ptr<const char[]> key_guard;
-    rocksdb::Slice key = AllocateKey(&key_guard, KEY_SIZE);
-	RandomGenerator gen;
 
-	int query_type = query.GetType(rand_v);
+	int query_type = options.master_mode ? 0 : query.GetType(rand_v);
+	
+	GenerateKeyFromInt(key_rand, TOTAL_KEYS, KEY_SIZE, &this->key);
 
-	GenerateKeyFromInt(key_rand, TOTAL_KEYS, KEY_SIZE, &key);
-
-	V("SENDING KEY: %s.\n", key.data());
+	V("SENDING KEY: %s.\n", this->key.data());
 	switch (query_type) {
 		case 0: {
 			// get query
 			req.set_op(PPD_RDB_OP_GET);
-			req.set_key(key.data(), key.size());
+			req.set_key(this->key.data(), this->key.size());
 			break;
 		}
 		case 1: {
@@ -283,7 +282,7 @@ int rdb_gen::send_req(int fd)
 			int val_sz = ParetoCdfInversion(u, VALUE_THETA, VALUE_K, VALUE_SIGMA);
 			rocksdb::Slice val = gen.Generate((unsigned int)val_sz);
 			req.set_op(PPD_RDB_OP_PUT);
-			req.set_key(key.data(), key.size());
+			req.set_key(this->key.data(), this->key.size());
 			req.set_val(val.data(), val.size());
 			break;
 		}
@@ -291,7 +290,7 @@ int rdb_gen::send_req(int fd)
 			// seek query
 			int64_t scan_length = ParetoCdfInversion(u, ITER_THETA, ITER_K, ITER_SIGMA);
 			req.set_op(PPD_RDB_OP_SEEK);
-			req.set_key(key.data(), key.size());
+			req.set_key(this->key.data(), this->key.size());
 			req.set_optarg(scan_length);
 			break;
 		}

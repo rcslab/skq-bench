@@ -12,14 +12,32 @@
 #include <sstream>
 #include <sys/endian.h>
 #include <sys/param.h>
+#include <chrono>
 #include <unistd.h>
 #include "options.h"
+#include "rocksdb/cache.h"
 #include "rocksdb/status.h"
 
+#include <rocksdb/cache.h>
 #include <rocksdb/db.h>
-#include <rocksdb/slice.h>
-#include <rocksdb/iterator.h>
+#include <rocksdb/env.h>
+#include <rocksdb/filter_policy.h>
+#include <rocksdb/memtablerep.h>
 #include <rocksdb/options.h>
+#include <rocksdb/perf_context.h>
+#include <rocksdb/persistent_cache.h>
+#include <rocksdb/rate_limiter.h>
+#include <rocksdb/slice.h>
+#include <rocksdb/slice_transform.h>
+#include <rocksdb/stats_history.h>
+#include <rocksdb/utilities/object_registry.h>
+#include <rocksdb/utilities/optimistic_transaction_db.h>
+#include <rocksdb/utilities/options_util.h>
+#include <rocksdb/utilities/sim_cache.h>
+#include <rocksdb/utilities/transaction.h>
+#include <rocksdb/utilities/transaction_db.h>
+#include <rocksdb/write_batch.h>
+#include <rocksdb/table.h>
 
 #include <msg.pb.h>
 #include <util.h>
@@ -108,8 +126,7 @@ echo_proc::~echo_proc()
 
 int echo_proc::proc_req(int fd) 
 {
-	ppd_echo_req req;
-	ppd_echo_resp resp;
+	uint64_t ms1, ms2;
 	struct ppd_msg *msg = (struct ppd_msg *)this->read_buf;
 	int ret = readmsg(fd, this->read_buf, MAX_READ_BUF_SIZE);
 
@@ -118,6 +135,7 @@ int echo_proc::proc_req(int fd)
 		return ret;
 	}
 
+	ms1 = get_time_us();
 	if (!req.ParseFromArray(msg->payload, msg->size)) {
 		W("ParseFromArray failed for connection %d\n", fd);
 		return EINVAL;
@@ -135,6 +153,9 @@ int echo_proc::proc_req(int fd)
 	if (!resp.SerializeToArray(this->read_buf, MAX_READ_BUF_SIZE)) {
 		W("Couldn't searialize to array connection %d\n", fd);
 	}
+	ms2 = get_time_us();
+
+	V("Serialization: TIME: %ld\n", ms2 - ms1);
 
 	ret = writemsg(fd, this->read_buf, MAX_READ_BUF_SIZE, this->read_buf, resp.ByteSizeLong());
 	if (ret < 0) {
@@ -151,28 +172,48 @@ int echo_proc::proc_req(int fd)
 
 rocksdb::DB * rdb_proc::db = nullptr;
 std::atomic<int> rdb_proc::db_init {0};
-char rdb_proc::DB_PATH_TEMP[] {"/tmp/rocksdbXXXXXX"};
 
-rdb_proc::rdb_proc(std::unordered_map<std::string, std::string>*) : req_proc()
+rdb_proc::rdb_proc(std::unordered_map<std::string, std::string>* args) : req_proc()
 {
+	const char * db_path;
 	int desired = 0;
 	int target = 1;
 	if (std::atomic_compare_exchange_strong(&rdb_proc::db_init, &desired, target)) {
-		mktemp(DB_PATH_TEMP);
+		if (args->find(PARAM_PATH) != args->end()) {
+			db_path = args->at(PARAM_PATH).c_str();
+		} else {
+			E("Must specify -OPATH for rocksdb.\n");
+		}
 
-		V("Initializing rocksdb, path: %s.\n", DB_PATH_TEMP);
+		V("Initializing rocksdb, path: %s.\n", db_path);
 		
 		rocksdb::Options opt;
+		std::shared_ptr<rocksdb::Cache> cache = rocksdb::NewLRUCache(CACHE_SIZE, 6, false, 0.0);
 		opt.use_direct_io_for_flush_and_compaction = USE_DIRECT_IO_FOR_FLUSH_AND_COMPACTION;
 		opt.use_direct_reads = USE_DIRECT_READS;
-		opt.OptimizeForPointLookup(CACHE_SIZE);
-		opt.IncreaseParallelism();
-		opt.OptimizeLevelStyleCompaction();
-		opt.create_if_missing = true;
 
-		rocksdb::Status s = rocksdb::DB::Open(opt, std::string(DB_PATH_TEMP), &this->db);
+		rocksdb::BlockBasedTableOptions block_based_options;
+		block_based_options.index_type = rocksdb::BlockBasedTableOptions::kBinarySearch;
+		block_based_options.block_cache = cache;
+		opt.table_factory.reset(rocksdb::NewBlockBasedTableFactory(block_based_options)); 
+
+		if (opt.table_factory->GetOptions() != nullptr) {
+			rocksdb::BlockBasedTableOptions* table_options =
+			reinterpret_cast<rocksdb::BlockBasedTableOptions*>(
+				opt.table_factory->GetOptions());
+			table_options->block_cache = cache;
+		}
+		opt.IncreaseParallelism(12);
+		opt.OptimizeLevelStyleCompaction(1024 * 1024 * 1024);
+		opt.OptimizeUniversalStyleCompaction(1024 * 1024 * 1024);
+		opt.write_buffer_size = 1024 * 1024 * 1024;
+		opt.create_if_missing = false;
+		opt.compression = rocksdb::kNoCompression;
+
+
+		rocksdb::Status s = rocksdb::DB::Open(opt, std::string(db_path), &this->db);
 		if (!s.ok()) {
-			E("Could not open rocksdb! Err %d\n", s.code()); 
+			E("Could not open rocksdb! Err %s\n", s.ToString().c_str()); 
 		}
 
 		rdb_proc::db_init.store(2);
@@ -186,7 +227,7 @@ rdb_proc::rdb_proc(std::unordered_map<std::string, std::string>*) : req_proc()
 
 rdb_proc::~rdb_proc()
 {
-	delete this->db;
+	
 }
 
 int rdb_proc::proc_req(int fd)
@@ -257,10 +298,13 @@ int rdb_proc::proc_req(int fd)
 		}
 	}
 	
+	resp.set_status(0);
+
 	status = writemsg(fd, this->read_buf, MAX_READ_BUF_SIZE, this->read_buf, resp.ByteSizeLong());
 	if (status < 0) {
 		W("Writemsg failed with %d for connection %d\n", status, fd);
 	}
 
+	
 	return status;
 }

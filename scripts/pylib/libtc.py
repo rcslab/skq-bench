@@ -122,7 +122,7 @@ def parse_hostfile(fp):
 def process_hostnames(names, hosts):
 	ret = []
 	for line in names:
-		if hosts[line] != None:
+		if line in hosts:
 			ret.append(hosts[line])
 		else:
 			ret.append(line)

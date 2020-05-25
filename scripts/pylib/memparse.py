@@ -62,18 +62,19 @@ def parse_mut_sample(fn):
 # generate mutilate output format
 def build_mut_output(lat_arr, qps_arr):
 
-	output = '{0: <10}'.format('#type') + '{0: >8}'.format('avg') + '{0: >8}'.format('std') + \
-				      '{0: >8}'.format('min') + '{0: >8}'.format('5th') + '{0: >8}'.format('10th') + \
-					  '{0: >8}'.format('50th') + '{0: >8}'.format('90th')  + '{0: >8}'.format('95th') + '{0: >8}'.format('99th') + "\n"
+	output = '{0: <10}'.format('#type') + '{0: >10}'.format('avg') + '{0: >10}'.format('std') + \
+				      '{0: >10}'.format('min') + '{0: >10}'.format('5th') + '{0: >10}'.format('10th') + \
+					  '{0: >10}'.format('50th') + '{0: >10}'.format('90th')  + '{0: >10}'.format('95th') + '{0: >10}'.format('99th') + "\n"
 	
-	output += '{0: <10}'.format('read') + '{0: >8}'.format("{:.1f}".format(np.mean(lat_arr))) + '{0: >8}'.format("{:.1f}".format(np.std(lat_arr))) + \
-				      '{0: >8}'.format("{:.1f}".format(np.min(lat_arr))) + \
-					  '{0: >8}'.format("{:.1f}".format(np.percentile(lat_arr, 5))) + \
-					  '{0: >8}'.format("{:.1f}".format(np.percentile(lat_arr, 10))) + \
-					  '{0: >8}'.format("{:.1f}".format(np.percentile(lat_arr, 50))) + \
-					  '{0: >8}'.format("{:.1f}".format(np.percentile(lat_arr, 90))) + \
-					  '{0: >8}'.format("{:.1f}".format(np.percentile(lat_arr, 95))) + \
-					  '{0: >8}'.format("{:.1f}".format(np.percentile(lat_arr, 99))) + "\n" \
+	output += '{0: <10}'.format('read') + '{0: >10}'.format("{:.1f}".format(np.mean(lat_arr))) + ' ' + \
+                      '{0: >10}'.format("{:.1f}".format(np.std(lat_arr))) + ' ' + \
+				      '{0: >10}'.format("{:.1f}".format(np.min(lat_arr))) + ' ' + \
+					  '{0: >10}'.format("{:.1f}".format(np.percentile(lat_arr, 5))) + ' ' + \
+					  '{0: >10}'.format("{:.1f}".format(np.percentile(lat_arr, 10))) + ' ' + \
+					  '{0: >10}'.format("{:.1f}".format(np.percentile(lat_arr, 50))) + ' ' + \
+					  '{0: >10}'.format("{:.1f}".format(np.percentile(lat_arr, 90))) + ' ' + \
+					  '{0: >10}'.format("{:.1f}".format(np.percentile(lat_arr, 95))) + ' ' + \
+					  '{0: >10}'.format("{:.1f}".format(np.percentile(lat_arr, 99))) + ' ' + "\n" \
 
 	output += "\n" + "Total QPS = " + "{:.1f}".format(np.mean(qps_arr)) + " (0 / 0s)"
 

@@ -20,22 +20,22 @@ root_dir = file_dir + "/../../"
 sample_filename = "sample.txt"
 
 sched = [
-	#"vanilla", -1,
-	#"cpu0", tc.make_sched_flag(tc.SCHED_CPU, 0),
-	"vanilla_single", -2,
+	"cpu0", tc.make_sched_flag(tc.SCHED_CPU, 0),
+	#"multiple_skq", -1,
+	#"vanilla_single", -2,
 ]
 
 master = ["skylake2"]
 server = ["skylake1"]
-clients = ["skylake3", "skylake4", "skylake5", "skylake6", "skylake7", "skylake8"]
+clients = ["skylake3", "skylake4", "skylake5", "skylake6", "skylake7", "skylake8", "sandybridge1", "sandybridge2", "sandybridge3", "sandybridge4"]
 
-threads = [12]
+threads = [12, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
 
 client_threads = 12
 warmup = 3
-duration = 4
+duration = 3
 cooldown = 0
-conn_per_thread = 12
+conn_per_thread = 1
 
 server_delay = False
 conn_delay = False
@@ -73,7 +73,7 @@ def run_exp(sc, ld, lstat):
 		else:
 			# start server
 			tc.log_print("Starting server...")
-			server_cmd = test_dir + "/pingpong/ppd/ppd -a -t " + str(ld)
+			server_cmd = test_dir + "/pingpong/build/ppd -a -t " + str(ld) + " -M 0 "
 
 			if server_delay:
 				server_cmd += " -D "
@@ -97,14 +97,14 @@ def run_exp(sc, ld, lstat):
 
 		# start clients
 		tc.log_print("Starting clients...")
-		client_cmd = tc.get_cpuset_core(client_threads) + " " + test_dir + "/pingpong/dismember/dismember -A"
+		client_cmd = tc.get_cpuset_core(client_threads) + " " + test_dir + "/pingpong/build/dismember -A"
 		tc.log_print(client_cmd)
 		sclt = tc.remote_exec(clients, client_cmd, blocking=False)
 
 		time.sleep(1)
 		# start master
 		tc.log_print("Starting master...")
-		master_cmd = tc.get_cpuset_core(client_threads) + " " + test_dir + "/pingpong/dismember/dismember " + \
+		master_cmd = tc.get_cpuset_core(client_threads) + " " + test_dir + "/pingpong/build/dismember " + \
 			                  get_client_str(clients) + \
 							  " -s " + server[0] + \
 							  " -q 0" + \
@@ -114,7 +114,12 @@ def run_exp(sc, ld, lstat):
 							  " -w " + str(duration) + \
 							  " -W " + str(warmup) + \
                               " -T " + str(client_threads) + \
-							  " -i exponential "
+							  " -i exponential " + \
+							  " -C 12 " + \
+							  " -Q 1000 " + \
+							  " -l 0 " + \
+                              " -OGEN=fixed:5 "
+
 
 		tc.log_print(master_cmd)
 		sp = tc.remote_exec(master, master_cmd, blocking=False)
@@ -256,6 +261,11 @@ def main():
 	for i in range(0, len(sched), 2):
 		esched = sched[i+1]
 		ename = sched[i]
+
+		# output, sout, serr = run_exp(esched, 12, lockstat)
+		# keep_results(99, output, sout, serr)
+		# stop_all()
+
 		tc.begin(ename)
 		for j in range(0, len(threads)):
 			ethread = threads[j]

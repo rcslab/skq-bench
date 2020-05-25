@@ -9,6 +9,8 @@
 #include <atomic>
 #include <sys/param.h>
 
+#include <msg.pb.h>
+
 #define DISABLE_EVIL_CONSTRUCTORS(name) \
 	name(const name&) = delete; \
 	void operator=(const name) = delete
@@ -47,6 +49,9 @@ class touch_proc : public req_proc
 
 class echo_proc : public req_proc
 {
+	private:
+		ppd_echo_req req;
+		ppd_echo_resp resp;
 	public:
 		echo_proc(std::unordered_map<std::string, std::string>* args);
 		echo_proc() = delete;
@@ -62,9 +67,9 @@ class rdb_proc : public req_proc
 		constexpr static bool USE_DIRECT_READS = true;
 		constexpr static int CACHE_SIZE = 268435456;
 		constexpr static int MAX_MSG_SZ = 4096;
+		static constexpr const char* PARAM_PATH = "PATH";
 		static std::atomic<int> db_init;
 		static rocksdb::DB *db;
-		static char DB_PATH_TEMP[];
 	public:
 		rdb_proc(std::unordered_map<std::string, std::string>* args);
 		rdb_proc() = delete;

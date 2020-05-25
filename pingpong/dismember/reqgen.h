@@ -7,6 +7,7 @@
 #include <rocksdb/db.h>
 #include "Generator.h"
 #include "options.h"
+#include <msg.pb.h>
 
 #define DISABLE_EVIL_CONSTRUCTORS(name) \
 	name(const name&) = delete; \
@@ -97,9 +98,9 @@ class rdb_gen : public req_gen
 		};
 
 		constexpr static int64_t TOTAL_KEYS = 50000000;
-		constexpr static double GET_RATIO = 0.85;
+		constexpr static double GET_RATIO = 0.83;
 		constexpr static double PUT_RATIO = 0.14;
-		constexpr static double SEEK_RATIO = 0.01;
+		constexpr static double SEEK_RATIO = 0.03;
 		constexpr static int KEYRANGE_NUM = 30;
 		constexpr static double KEYRANGE_DIST_A = 14.18;
 		constexpr static double KEYRANGE_DIST_B = -2.917;
@@ -116,7 +117,7 @@ class rdb_gen : public req_gen
 		constexpr static double ITER_K = 2.517;
 		constexpr static double ITER_SIGMA = 14.236;
 		constexpr static double READ_RANDOM_EXP_RANGE = 0.0;
-		constexpr static bool IS_LITTLE_ENDIAN = false;
+		constexpr static bool IS_LITTLE_ENDIAN = true;
 		constexpr static int FIXED_VALUE_SIZE = 100;
 		// A good 64-bit random number generator based on std::mt19937_64
 		class Random64 {
@@ -596,6 +597,9 @@ class rdb_gen : public req_gen
 	GenerateTwoTermExpKeys gen_exp;
 	QueryDecider query;
 	Random64 rand;
+	RandomGenerator gen;
+	rocksdb::Slice key;
+	std::unique_ptr<const char[]> key_guard;
 
 	public:
 		rdb_gen(const int conn_id, std::unordered_map<std::string, std::string>* args);

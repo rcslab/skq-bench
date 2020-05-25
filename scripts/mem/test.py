@@ -20,32 +20,34 @@ root_dir = file_dir + "/../../"
 sample_filename = "sample.txt"
 
 sched = [
-	"queue0", tc.make_sched_flag(tc.SCHED_QUEUE, 0),
+ 	#"linox", -2,
+	#"arachne", -3,
 	"vanilla", -1,
+	"queue0", tc.make_sched_flag(tc.SCHED_QUEUE, 0),
     "cpu0", tc.make_sched_flag(tc.SCHED_CPU, 0),
-	"best2", tc.make_sched_flag(tc.SCHED_BEST, 2),
-	"q0_ws4", tc.make_sched_flag(tc.SCHED_QUEUE, 0, feat=tc.SCHED_FEAT_WS, fargs=4),
-	"queue2", tc.make_sched_flag(tc.SCHED_QUEUE, 2),
-	"q2_ws4", tc.make_sched_flag(tc.SCHED_QUEUE, 2, feat=tc.SCHED_FEAT_WS, fargs=4),
-	"cpu0_ws4", tc.make_sched_flag(tc.SCHED_CPU, 0, feat=tc.SCHED_FEAT_WS, fargs=4),
-	"cpu2", tc.make_sched_flag(tc.SCHED_CPU, 2),
-    "cpu2_ws4", tc.make_sched_flag(tc.SCHED_CPU, 2, feat=tc.SCHED_FEAT_WS, fargs=4),
-	"best2_ws4", tc.make_sched_flag(tc.SCHED_BEST, 2, feat=tc.SCHED_FEAT_WS, fargs=4),
+	#"best2", tc.make_sched_flag(tc.SCHED_BEST, 2),
+	#"queue2", tc.make_sched_flag(tc.SCHED_QUEUE, 2),
+	#"cpu2", tc.make_sched_flag(tc.SCHED_CPU, 2),
+	"q0_ws", tc.make_sched_flag(tc.SCHED_QUEUE, 0, feat=tc.SCHED_FEAT_WS, fargs=1),
+	#"q2_ws", tc.make_sched_flag(tc.SCHED_QUEUE, 2, feat=tc.SCHED_FEAT_WS, fargs=1),
+	"cpu0_ws", tc.make_sched_flag(tc.SCHED_CPU, 0, feat=tc.SCHED_FEAT_WS, fargs=1),
+    #"cpu2_ws", tc.make_sched_flag(tc.SCHED_CPU, 2, feat=tc.SCHED_FEAT_WS, fargs=1),
+	#"best2_ws", tc.make_sched_flag(tc.SCHED_BEST, 2, feat=tc.SCHED_FEAT_WS, fargs=1),
 	#"rand", make_sched_flag(0, 0),
-	#"arachne", -2,
-	#"linox", -3, 
 ]
 
-
 step_inc_pct = 100
-init_step = 100000
+init_step = 50000
 
 term_pct = 1
 inc_pct = 50
 
 master = ["skylake2"]
+master_ssh = master.copy()
 server = ["skylake1"]
-clients = ["skylake3", "skylake4", "skylake5", "skylake6", "skylake7", "skylake8"] # "sandybridge2", "sandybridge3", "sandybridge4"]
+server_ssh = server.copy()
+clients = ["skylake3", "skylake4", "skylake5", "skylake6", "skylake7", "skylake8", "sandybridge1",  "sandybridge2",  "sandybridge3", "sandybridge4"]
+clients_ssh = clients.copy()
 
 threads = 12
 client_threads = 12
@@ -54,7 +56,7 @@ duration = 10
 cooldown = 0
 conn_per_thread = 12
 hostfile = None
-dump = False
+dump = True
 lockstat = False
 client_only = False
 
@@ -67,16 +69,16 @@ def get_client_str(cl):
 def stop_all():
 	# stop clients
 	tc.log_print("Stopping clients...")
-	tc.remote_exec(clients, "killall -9 mutilate", check=False)
+	tc.remote_exec(clients_ssh, "killall -9 mutilate", check=False)
 
 	if not client_only:
 		# stop server
 		tc.log_print("Stopping server...")
-		tc.remote_exec(server, "killall -9 memcached", check=False)
+		tc.remote_exec(server_ssh, "killall -9 memcached", check=False)
 
 	# stop master
 	tc.log_print("Stopping master...")
-	tc.remote_exec(master, "killall -9 mutilate", check=False)
+	tc.remote_exec(master_ssh, "killall -9 mutilate", check=False)
 
 def run_exp(sc, ld, lstat):
 	while True:
@@ -89,10 +91,10 @@ def run_exp(sc, ld, lstat):
 			if sc == -1:
 				server_cmd = tc.get_cpuset_core(threads) + " " + test_dir + "/memcached/memcached -m 1024 -c 65536 -b 4096 -t " + str(threads)
 			elif sc == -2:
-				server_cmd = "limit core 0; export EVENT_NOEPOLL=1; " + tc.get_cpuset_core(threads) + " " + \
-												test_dir + "/memcached_linox/memcached -m 1024 -c 65536 -b 4096 -t " + str(threads)
+				server_cmd = "limit core 0; sudo " + tc.get_cpuset_core(threads) + " " + \
+												test_dir + "/memcached_linox/memcached -u oscar -m 1024 -c 65536 -b 4096 -t " + str(threads)
 			elif sc == -3:
-				server_cmd = "limit core 0; " + tc.get_cpuset_core(threads) + " " + test_dir + "/memcached-A/memcached -m 1024 -c 65536 -b 4096 -t 1 " + \
+				server_cmd = "limit core 0; sudo " + tc.get_cpuset_core(threads) + " " + test_dir + "/memcached-A/memcached -u oscar -m 1024 -c 65536 -b 4096 -t 1 " + \
 																	"--minNumCores 2 --maxNumCores " + str(threads - 1)
 			else:
 				server_cmd = test_dir + "/mem/memcached -e -m 1024 -c 65536 -b 4096 -t " + str(threads) + " -q " + str(sc) + (" -j 1 " if dump else "")
@@ -101,20 +103,28 @@ def run_exp(sc, ld, lstat):
 				server_cmd = "sudo lockstat -A -P -s16 -n16777216 " + server_cmd + " -u " + tc.get_username()
 
 			tc.log_print(server_cmd)
-			ssrv = tc.remote_exec(server, server_cmd, blocking=False)
+			ssrv = tc.remote_exec(server_ssh, server_cmd, blocking=False)
 
+		# pre-load server
+		time.sleep(1)
+		tc.log_print("Preloading server...")
+		preload_cmd = test_dir + "/mutilate/mutilate --loadonly -s localhost"
+		tc.log_print(preload_cmd)
+		tc.remote_exec(server_ssh, preload_cmd, blocking=True)
+
+		time.sleep(1)
 		# start clients
 		tc.log_print("Starting clients...")
 		client_cmd = tc.get_cpuset_core(client_threads) + " " + test_dir + "/mutilate/mutilate -A -T " + str(client_threads)
 		tc.log_print(client_cmd)
-		sclt = tc.remote_exec(clients, client_cmd, blocking=False)
+		sclt = tc.remote_exec(clients_ssh, client_cmd, blocking=False)
 
 		time.sleep(1)
 		# start master
 		tc.log_print("Starting master...")
-		master_cmd = test_dir + "/mutilate/mutilate -K fb_key -V fb_value -i fb_ia -u 0.03 -Q 1000 " + \
+		master_cmd = test_dir + "/mutilate/mutilate --noload -K fb_key -V fb_value -i fb_ia -u 0.03 -Q 1000 " + \
 		                                " -T " + str(client_threads) + \
-									    " -C " + str(conn_per_thread) + \
+									    " -C 1 " + \
 										" -c " + str(conn_per_thread) + \
 										" -w " + str(warmup) + \
 										" -t " + str(duration) + \
@@ -122,7 +132,7 @@ def run_exp(sc, ld, lstat):
 										" -q " + str(ld) + \
 										" --save " + test_dir + "/" + sample_filename
 		tc.log_print(master_cmd)
-		sp = tc.remote_exec(master, master_cmd, blocking=False)
+		sp = tc.remote_exec(master_ssh, master_cmd, blocking=False)
 		p = sp[0]
 
 		success = False
@@ -131,7 +141,7 @@ def run_exp(sc, ld, lstat):
 			# either failed or timeout
 			# we use failure detection to save time for long durations
 			if False \
-				or not tc.scan_stderr(ssrv, exclude=[".*warn.*", ".*DEBUG.*"]) \
+				or not tc.scan_stderr(ssrv, exclude=[".*warn.*", ".*DEBUG.*", ".*"]) \
 				or not tc.scan_stderr(sclt) \
 				or cur >= int(warmup + duration) * 3 \
 				or not tc.scan_stderr(sp, exclude=[".*mutex.hpp.*"]) \
@@ -167,7 +177,7 @@ def keep_results(ld, output, sout, serr):
 	f.write(output)
 	f.close()
 
-	scpcmd = "scp " + master[0] + ":" + test_dir + "/" + sample_filename + " " + tc.get_odir() + "/l" + ld + ".sample"
+	scpcmd = "scp " + master_ssh[0] + ":" + test_dir + "/" + sample_filename + " " + tc.get_odir() + "/l" + ld + ".sample"
 	tc.log_print(scpcmd)
 	sp.check_call(scpcmd, shell=True)
 
@@ -188,6 +198,7 @@ def main():
 	global dump
 	global lockstat
 	global client_only
+	global master
 
 	options = getopt.getopt(sys.argv[1:], 'h:sldc')[0]
 	for opt, arg in options:

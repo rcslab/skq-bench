@@ -29,22 +29,22 @@ sample_filename = "sample.txt"
 sched = [
 	#"vanilla", -1,
 	#"queue0", tc.make_sched_flag(tc.SCHED_QUEUE, 0),
-	#"cpu0_ws4", tc.make_sched_flag(tc.SCHED_CPU, 0, feat=tc.SCHED_FEAT_WS, fargs=4),
-    #"cpu2_ws4", tc.make_sched_flag(tc.SCHED_CPU, 2, feat=tc.SCHED_FEAT_WS, fargs=4),
+	#"cpu0_ws", tc.make_sched_flag(tc.SCHED_CPU, 0, feat=tc.SCHED_FEAT_WS, fargs=1),
+    #"cpu2_ws", tc.make_sched_flag(tc.SCHED_CPU, 2, feat=tc.SCHED_FEAT_WS, fargs=1),
 	#"best2", tc.make_sched_flag(tc.SCHED_BEST, 2),
-	#"best2_ws4", tc.make_sched_flag(tc.SCHED_BEST, 2, feat=tc.SCHED_FEAT_WS, fargs=4),
-	#"q0_ws4", tc.make_sched_flag(tc.SCHED_QUEUE, 0, feat=tc.SCHED_FEAT_WS, fargs=4),
+	#"best2_ws", tc.make_sched_flag(tc.SCHED_BEST, 2, feat=tc.SCHED_FEAT_WS, fargs=1),
+	#"q0_ws", tc.make_sched_flag(tc.SCHED_QUEUE, 0, feat=tc.SCHED_FEAT_WS, fargs=1),
 	#"queue2", tc.make_sched_flag(tc.SCHED_QUEUE, 2),
-	#"q2_ws4", tc.make_sched_flag(tc.SCHED_QUEUE, 2, feat=tc.SCHED_FEAT_WS, fargs=4),
-	"cpu0", tc.make_sched_flag(tc.SCHED_CPU, 0),
-	#"cpu0_ws4", tc.make_sched_flag(tc.SCHED_CPU, 0, feat=tc.SCHED_FEAT_WS, fargs=4),
+	#"q2_ws", tc.make_sched_flag(tc.SCHED_QUEUE, 2, feat=tc.SCHED_FEAT_WS, fargs=1),
+	#"cpu0", tc.make_sched_flag(tc.SCHED_CPU, 0),
+	#"cpu0_ws", tc.make_sched_flag(tc.SCHED_CPU, 0, feat=tc.SCHED_FEAT_WS, fargs=1),
 	#"cpu2", tc.make_sched_flag(tc.SCHED_CPU, 2),
 	#"rand", make_sched_flag(0, 0),
 ]
 
 master = ["skylake2"]
 server = ["skylake1"]
-clients = ["skylake3", "skylake4", "skylake5", "skylake6", "skylake7"]
+clients = ["skylake3", "skylake5", "skylake6", "skylake7", "skylake8", "sandybridge1", "sandybridge2", "sandybridge3", "sandybridge4"]
 
 threads = 12
 client_threads = 12
@@ -52,11 +52,11 @@ warmup = 5
 duration = 10
 cooldown = 0
 conn_per_thread = 12
-conn_delay = False
+conn_delay = True
 priority = False
 
 hostfile = None
-dump = False
+dump = True
 lockstat = False
 client_only = False
 
@@ -87,7 +87,7 @@ def run_exp(sc, ld, lstat):
 		else:
 			# start server
 			tc.log_print("Starting server...")
-			server_cmd = test_dir + "/pingpong/ppd/ppd -a -t " + str(threads) + " -p " + str(server_port)
+			server_cmd = test_dir + "/pingpong/build/ppd -a -t " + str(threads) + " -p " + str(server_port) + " -M 0 "
 
 			if priority:
 				server_cmd += " -F 10000 -r " + master[0] + " "
@@ -106,14 +106,14 @@ def run_exp(sc, ld, lstat):
 
 		# start clients
 		tc.log_print("Starting clients...")
-		client_cmd = tc.get_cpuset_core(client_threads) + " " + test_dir + "/pingpong/dismember/dismember -A"
+		client_cmd = tc.get_cpuset_core(client_threads) + " " + test_dir + "/pingpong/build/dismember -A"
 		tc.log_print(client_cmd)
 		sclt = tc.remote_exec(clients, client_cmd, blocking=False)
 
 		time.sleep(1)
 		# start master
 		tc.log_print("Starting master...")
-		master_cmd = tc.get_cpuset_core(client_threads) + " " + test_dir + "/pingpong/dismember/dismember " + \
+		master_cmd = tc.get_cpuset_core(client_threads) + " " + test_dir + "/pingpong/build/dismember " + \
 			                  get_client_str(clients) + \
 							  " -s " + server[0] + \
 							  " -p " + str(server_port) + \
@@ -124,12 +124,12 @@ def run_exp(sc, ld, lstat):
 							  " -w " + str(duration) + \
 							  " -W " + str(warmup) + \
                               " -T " + str(client_threads) + \
-							  " -i exponential " + \
-							  " -C " + str(client_threads) + \
+							  " -i fb_ia " + \
+							  " -C 12 " + \
 							  " -Q 1000 " + \
-								" -l ECHO " + \
-                                                                " -OGEN=fb_ia" + \
-								" -OCDELAY=" + ("1" if conn_delay else "0")
+							  " -l 0 " + \
+                              " -OGEN=fixed:0 " + \
+							  " -OCDELAY=" + ("1" if conn_delay else "0")
 
 		tc.log_print(master_cmd)
 		sp = tc.remote_exec(master, master_cmd, blocking=False)
@@ -233,6 +233,7 @@ def main():
 	global lockstat
 	global client_only
 	global priority
+	global master
 
 	options = getopt.getopt(sys.argv[1:], 'h:sldcp')[0]
 	for opt, arg in options:
@@ -278,7 +279,7 @@ def main():
 		tc.begin(ename)
 
 		tc.log_print("============ Sched: " + str(ename) + " Flag: " + format(esched, '#04x') + " Load: MAX" + " ============")
-		output, sout, serr = run_exp(esched, 0, lockstat)
+		output, sout, serr = run_exp(esched, 600000, lockstat)
 		keep_results(output, sout, serr)
 		stop_all()
 		

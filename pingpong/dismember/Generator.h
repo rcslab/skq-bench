@@ -195,7 +195,7 @@ public:
   KeyGenerator(Generator* _g, double _max = 10000) : g(_g), max(_max) {}
   std::string generate(uint64_t ind) {
     uint64_t h = fnv_64(ind);
-    double U = (double) h / ULLONG_MAX;
+    double U = (double) h / (double)ULLONG_MAX;
     double G = g->generate(U);
     int keylen = MAX(round(G), floor(log10(max)) + 1);
     char key[256];

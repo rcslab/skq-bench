@@ -1,3 +1,4 @@
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdalign.h>
@@ -29,7 +30,7 @@
 
 #include <msg.pb.h>
 
-static constexpr int NEVENT = 256;
+static constexpr int NEVENT = 2048;
 static constexpr int SOCK_BACKLOG = 10000;
 static constexpr int SINGLE_LEGACY = -1;
 static constexpr int DEFAULT_PORT = 9898;
@@ -155,7 +156,7 @@ handle_event(struct worker_thread *tinfo, struct kevent* kev)
 	hint = (struct conn_hint*)kev->udata;
 
 	if (kev->flags & EV_EOF) {
-		V("Connection %d dropped due to EOF. ERR: %d\n", conn_fd, kev->fflags);
+		V("Thread %d, hint %p, connection %d dropped due to EOF. ERR: %d\n", tinfo->id, hint, conn_fd, kev->fflags);
 		drop_conn(tinfo, kev);
 		return ECONNRESET;
 	}
@@ -335,6 +336,7 @@ create_workers(int kq, std::vector<struct worker_thread*> *thrds)
 
 		pthread_attr_t  attr;
 		pthread_attr_init(&attr);
+		pthread_attr_setstacksize(&attr, 1024 * 1024);
 
 		if (options.cpu_affinity) {
 			int tgt;
