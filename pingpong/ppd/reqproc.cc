@@ -197,12 +197,6 @@ rdb_proc::rdb_proc(std::unordered_map<std::string, std::string>* args) : req_pro
 		block_based_options.block_cache = cache;
 		opt.table_factory.reset(rocksdb::NewBlockBasedTableFactory(block_based_options)); 
 
-		if (opt.table_factory->GetOptions() != nullptr) {
-			rocksdb::BlockBasedTableOptions* table_options =
-			reinterpret_cast<rocksdb::BlockBasedTableOptions*>(
-				opt.table_factory->GetOptions());
-			table_options->block_cache = cache;
-		}
 		opt.IncreaseParallelism(12);
 		opt.OptimizeLevelStyleCompaction(1024 * 1024 * 1024);
 		opt.OptimizeUniversalStyleCompaction(1024 * 1024 * 1024);

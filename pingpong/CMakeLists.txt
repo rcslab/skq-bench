@@ -24,11 +24,11 @@ add_executable(dismember ${CMAKE_CURRENT_SOURCE_DIR}/dismember/dismember.cc
                                 ${CMAKE_CURRENT_SOURCE_DIR}/dismember/reqgen.cc
                                 ${CMAKE_CURRENT_SOURCE_DIR}/dismember/util.cc
                                 ${CMAKE_CURRENT_BINARY_DIR}/msg/msg.pb.cc)
-target_link_libraries(dismember ${Protobuf_LIBRARIES} ${ROCKSDB_LIBRARIES})
+target_link_libraries(dismember ${Protobuf_LIBRARIES} ${ROCKSDB_LIBRARIES} bz2 z)
 target_compile_options(dismember PRIVATE ${CFLAGS})
 
 add_executable(ppd ${CMAKE_CURRENT_SOURCE_DIR}/ppd/ppd.cc
                     ${CMAKE_CURRENT_SOURCE_DIR}/ppd/reqproc.cc
                     ${CMAKE_CURRENT_BINARY_DIR}/msg/msg.pb.cc)
-target_link_libraries(ppd ${Protobuf_LIBRARIES} ${ROCKSDB_LIBRARIES})
+target_link_libraries(ppd ${Protobuf_LIBRARIES} ${ROCKSDB_LIBRARIES} bz2 z)
 target_compile_options(ppd PRIVATE ${CFLAGS})
